@@ -26,3 +26,4 @@ Thumbs.db
 out/
 tmp/
 *.log
+.ipynb_checkpoints/
