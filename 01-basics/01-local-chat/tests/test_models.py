@@ -59,6 +59,16 @@ def test_모델_내리기는_빈_messages와_keep_alive_0을_보내고_성공하
     assert unload_model(fake.host, "qwen3:8b") == UNLOADED
     assert fake.unloads == [{"model": "qwen3:8b", "messages": [], "keep_alive": 0, "stream": False}]
     assert fake.requests == []  # 일반 채팅 요청으로 세지 않는다
+    assert fake.unload_paths == ["/api/chat"] and fake.bad_paths == []  # 실제 Ollama의 /api/chat 경로로 보냈다
+
+
+def test_가짜_서버는_잘못된_endpoint에_성공으로_답하지_않는다(fake):
+    """시험이 URL을 증명하려면 가짜 서버가 /api/chat·/api/show 밖의 경로를 받아 주면 안 된다."""
+    import httpx
+
+    body = {"model": "m", "messages": [], "keep_alive": 0, "stream": False}
+    assert httpx.post(f"{fake.host}/wrong", json=body).status_code == 404
+    assert fake.bad_paths == ["/wrong"] and fake.unloads == []
 
 
 def test_설치돼_있지_않은_모델은_not_installed(fake):

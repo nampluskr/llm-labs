@@ -258,6 +258,26 @@ def drive(window, result, scenario):
             submit(window, "화면과 다른 모델로 가면 안 되는 질문")
             time.sleep(0.5)
             result["bubbles"] = js(window, "document.querySelectorAll('.msg').length")
+        elif scenario == "switch_midflight":
+            wait(window, "document.getElementById('model').disabled === false", 15)
+            # 서버의 전환은 진행 중인데 브리지 응답만 먼저 실패하는 것처럼 만든다(전환은 내리기가 실패해 되돌려질 것이다)
+            js(window, "window.__setModel = window.pywebview.api.set_model; window.pywebview.api.set_model = (n) => { window.__setModel(n); return Promise.reject(new Error('lost')); }; 0")
+            js(window, "(function(){const el = document.getElementById('model'); el.value = 'exaone3.5:7.8b'; el.dispatchEvent(new Event('change')); return 0})()")
+            time.sleep(0.5)  # 서버가 아직 내리는 중이다
+            result["during"] = json.loads(js(window, "JSON.stringify({send: document.getElementById('send').disabled, model: document.getElementById('model').disabled, info: document.getElementById('info').textContent})"))
+            wait(window, "!document.getElementById('send').disabled", 30)
+            result["after"] = json.loads(js(window, "JSON.stringify({model: document.getElementById('model').value, info: document.getElementById('info').textContent, send: document.getElementById('send').disabled})"))
+            result["ask"] = ask(window, "질문")
+        elif scenario == "double_change":
+            wait(window, "document.getElementById('model').disabled === false", 15)
+            fire_js = "(function(id, v){const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('change')); return 0})"
+            js(window, fire_js + "('model', 'exaone3.5:7.8b')")  # 첫 변경이 처리되는 동안
+            js(window, fire_js + "('model', 'qwen3:14b')")  # 두 번째 변경 이벤트가 온다
+            js(window, fire_js + "('numctx', '8192')")  # 옵션 변경도 온다
+            wait(window, "document.getElementById('model').disabled === false", 30)
+            time.sleep(0.3)
+            result["after"] = json.loads(js(window, "JSON.stringify({model: document.getElementById('model').value, numctx: document.getElementById('numctx').value, info: document.getElementById('info').textContent})"))
+            result["ask"] = ask(window, "질문")
         elif scenario == "escape":
             result["first"] = ask(window, "태그")
             result["bold_elements"] = js(window, "document.querySelectorAll('.msg.assistant b').length")

@@ -122,6 +122,8 @@ class Api:
             "num_ctx": options.get("num_ctx"),
             "temperature": options.get("temperature"),
             "think": self._session.think,
+            # 전환 중이면 모델·think는 임시로 적용된 값일 수 있다(내리기에 실패하면 되돌려진다). 화면은 끝날 때까지 기다린다
+            "switching": self._switching,
         }
 
 

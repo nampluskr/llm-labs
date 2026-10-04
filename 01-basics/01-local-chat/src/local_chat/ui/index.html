@@ -231,6 +231,19 @@
     }
   }
 
+  async function resyncInfo() {
+    // 서버가 실제로 쓰는 값을 읽어 화면을 맞춘다. 전환이 진행 중이면 임시 값이 보일 수 있으니 끝나기를 기다린다(최대 약 16초)
+    for (let i = 0; i < 40; i++) {
+      const info = await window.pywebview.api.info();
+      if (!info.switching) {
+        renderInfo(info);
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+    return false;
+  }
+
   async function applyChange(call, okMessage) {
     setLocked(true);
     let r;
@@ -244,9 +257,13 @@
       statusEl.textContent = okMessage ? okMessage(r) : "";
     } else {
       // 거절되거나 응답이 오지 않았다. 서버가 실제로 쓰는 값을 다시 읽어 화면을 맞춘다(응답만 잃고 서버에서는 바뀌었을 수 있다)
+      let synced = false;
       try {
-        renderInfo(await window.pywebview.api.info());
+        synced = await resyncInfo();
       } catch (e) {
+        synced = false;
+      }
+      if (!synced) {
         // 서버가 실제로 쓰는 값을 알 수 없다. 화면과 다른 모델·옵션으로 질문이 나가지 않게 잠가 둔다
         statusEl.textContent = "서버 상태를 확인하지 못했습니다. 앱을 다시 여세요.";
         return;   // locked를 풀지 않는다
@@ -258,12 +275,20 @@
 
   modelSel.addEventListener("change", () => {
     const name = modelSel.value;
+    if (locked || busy) {   // 처리 중에 온 변경 이벤트는 받지 않는다(응답 순서가 뒤집혀 오래된 값이 화면을 덮지 않게)
+      renderInfo(shown);
+      return;
+    }
     if (!bridgeReady() || name === shown.model) return;
     applyChange(() => window.pywebview.api.set_model(name), (r) =>
       "모델을 " + name + "(으)로 바꿨습니다." + (r.unloaded === false ? " (이전 모델을 내리지 못했습니다)" : ""));
   });
 
   function commitOptions() {
+    if (locked || busy) {
+      renderInfo(shown);
+      return;
+    }
     if (!bridgeReady()) return;
     const num = (el) => (el.value.trim() === "" ? null : Number(el.value));   // 빈 값을 0으로 읽지 않는다
     applyChange(() => window.pywebview.api.set_options(num(numctxEl), num(tempEl)), () => "옵션을 바꿨습니다.");

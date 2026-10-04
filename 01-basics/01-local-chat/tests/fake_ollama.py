@@ -31,6 +31,8 @@ class FakeOllama:
         self.unload_delay = 0.0  # 모델 내리기 응답을 늦춘다(전환 중 상태 시험)
         self.unload_started = threading.Event()
         self.unload_time = None  # 내리기 요청이 서버에 도착한 시각(time.perf_counter)
+        self.unload_paths = []  # 내리기 요청이 온 URL 경로
+        self.bad_paths = []  # /api/chat·/api/show 밖으로 온 POST 경로(404로 답한다)
         self.unload_body = None  # 주면 HTTP 200으로 이 JSON을 돌려준다(오류 본문 시험)
         self.unload_script = None  # 주면 내리기 응답을 직접 쓴다(헤더 trickle 시험)
         self.get_script = None  # 주면 GET 응답을 직접 쓴다(/api/tags 느린 응답 시험)
@@ -49,6 +51,10 @@ class FakeOllama:
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path not in ("/api/show", "/api/chat"):
+                    owner.bad_paths.append(self.path)  # 잘못된 endpoint로 보내면 성공으로 답하지 않는다
+                    send_lines(self, [{"error": "not found"}], status=404)
+                    return
                 if self.path == "/api/show":
                     owner.show_requests.append(body)
                     if owner.show_script is not None:
@@ -59,6 +65,7 @@ class FakeOllama:
                     return
                 if body.get("messages") == [] and body.get("keep_alive") == 0:
                     owner.unloads.append(body)
+                    owner.unload_paths.append(self.path)
                     owner.unload_time = time.perf_counter()
                     owner.unload_started.set()
                     if owner.unload_script is not None:

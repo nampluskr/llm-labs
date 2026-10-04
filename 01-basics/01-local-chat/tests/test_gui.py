@@ -279,3 +279,34 @@ def test_창은_전환_응답과_상태_조회가_모두_실패하면_잠가_두
     assert "서버 상태를 확인하지 못했습니다" in r["after"]["status"]
     assert r["after"]["send"] is True and r["after"]["model"] is True and r["after"]["numctx"] is True
     assert r["bubbles"] == 0 and fake.requests == []  # 잠긴 사이 보낸 질문은 말풍선도 요청도 만들지 않았다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_전환_도중_응답이_끊기면_전환이_끝난_뒤_서버의_최종_상태로_맞춘다(fake, name):
+    """전환 중의 모델은 임시값이다. 내리기가 실패해 되돌려지면 화면도 이전 모델이어야 하고, 그 전에는 잠겨 있어야 한다."""
+    fake.tags = ["qwen3:8b", "exaone3.5:7.8b"]
+    fake.capabilities_by_model = {"qwen3:8b": ["completion", "thinking"], "exaone3.5:7.8b": ["completion"]}
+    fake.unload_delay = 1.5
+    fake.unload_status = 500  # 내리기가 실패해 서버는 전환을 되돌린다
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    r = run_driver(name, fake.host, "switch_midflight")
+    assert "driver_error" not in r, r
+    assert r["during"]["send"] is True and r["during"]["model"] is True  # 전환이 끝나기 전에는 잠겨 있다
+    assert "exaone3.5:7.8b" not in r["during"]["info"]  # 임시로 적용된 새 모델을 확정값으로 보여 주지 않는다
+    assert r["after"]["model"] == "qwen3:8b" and "qwen3:8b" in r["after"]["info"] and r["after"]["send"] is False  # 서버가 되돌린 최종 상태
+    assert fake.requests[-1]["model"] == "qwen3:8b" and r["ask"]["status"] == "1토큰 · 1.0 tok/s"  # 질문은 화면에 보이는 모델로 간다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_처리_중에_온_다른_변경_이벤트를_받지_않고_화면을_현재_값으로_되돌린다(fake, name):
+    fake.tags = ["qwen3:8b", "exaone3.5:7.8b", "qwen3:14b"]
+    fake.capabilities_by_model = {"qwen3:8b": ["completion", "thinking"], "exaone3.5:7.8b": ["completion"], "qwen3:14b": ["completion", "thinking"]}
+    fake.unload_delay = 1.0
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    r = run_driver(name, fake.host, "double_change")
+    assert "driver_error" not in r, r
+    # 첫 변경(exaone)만 적용되고, 처리 중에 온 두 번째 모델 변경·옵션 변경은 무시된다. 화면 = 서버
+    assert r["after"]["model"] == "exaone3.5:7.8b" and "exaone3.5:7.8b" in r["after"]["info"]
+    assert r["after"]["numctx"] == "4096" and "num_ctx 4096" in r["after"]["info"]
+    assert [u["model"] for u in fake.unloads] == ["qwen3:8b"]  # 전환은 한 번만 일어났다
+    assert fake.requests[-1]["model"] == "exaone3.5:7.8b" and fake.requests[-1]["options"]["num_ctx"] == 4096
