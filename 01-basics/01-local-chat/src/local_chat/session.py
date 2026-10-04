@@ -114,6 +114,15 @@ class ChatSession:
             if self._turn is turn:  # emit 안에서 다음 질문이 시작됐으면 그쪽이 idle을 켠다
                 self._idle.set()
 
+    def _abort(self, turn: _Turn) -> None:
+        """이벤트 전달이 실패했을 때(창이 닫힘): 호출 층의 다음 이벤트를 기다리지 않고 바로 확정하고 idle로 만든다.
+        _emit_lock을 쥔 채 부른다. 이미 확정된 턴이면 아무것도 하지 않는다."""
+        turn.cancelled.set()
+        with self._lock:
+            if not turn.finalized:
+                self._finalize(turn, "stopped")
+        self._set_idle(turn)
+
     def _emit(self, turn: _Turn, event: dict, force: bool = False) -> bool:
         """_emit_lock을 쥔 채 부른다. 취소된 턴의 이벤트는 버린다. force는 stop()이 stopped를 낼 때만 쓴다."""
         if turn.cancelled.is_set() and not force:
@@ -135,7 +144,8 @@ class ChatSession:
                     break
                 if isinstance(event, Thinking):
                     with self._emit_lock:  # 사고 과정은 답(turn.reply)에 넣지 않는다
-                        self._emit(turn, {"type": "thinking", "text": event.text})
+                        if not self._emit(turn, {"type": "thinking", "text": event.text}):
+                            self._abort(turn)
                 elif isinstance(event, Token):
                     with self._emit_lock:
                         # 먼저 쌓고 emit이 실패하면 되돌린다. emit 콜백이 같은 스레드에서 stop()을 불러도(RLock)
@@ -143,6 +153,7 @@ class ChatSession:
                         turn.reply.append(event.text)
                         if not self._emit(turn, {"type": "token", "text": event.text}):
                             turn.reply.pop()  # 전달되지 않은 토큰은 답에 남기지 않는다
+                            self._abort(turn)
                 elif isinstance(event, Done):
                     final = {"type": "done", "eval_count": event.eval_count, "tok_s": round(event.tokens_per_second, 1)}
                     break

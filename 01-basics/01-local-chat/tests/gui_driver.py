@@ -1,6 +1,6 @@
 """실제 pywebview 창을 띄워 DOM을 조작·관찰한다. 사용: python gui_driver.py <client> <host> <scenario> [entry]
 시나리오: ok(두 질문) · stop(중단 버튼, 취소된 요청의 늦은 이벤트까지 관찰) · many(12번 연속 질문)
-         · escape(HTML 이스케이프) · think(사고 과정 표시) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
+         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
 entry를 주면 build()가 아니라 앱 진입점 local_chat.app_<client>.main(argv)로 창을 띄운다.
 결과를 JSON 한 줄로 stdout에 낸다. pytest(test_gui.py)가 서브프로세스로 돌린다."""
 
@@ -128,7 +128,7 @@ def drive(window, result, scenario):
             wait(window, "document.getElementById('status').textContent.includes('tok/s')", 15)
             end_state = state(window)
             result["end"] = {"final": end_state["t"], "status": end_state["status"], "messages": js(window, "document.querySelectorAll('.msg').length")}
-        elif scenario == "think":
+        elif scenario in ("think", "think_reopen"):
             probe = (
                 "(function(){const b=" + LAST + ";const d=b.querySelector('details.think');"
                 "const clone=b.cloneNode(true);const cd=clone.querySelector('details.think');if(cd)cd.remove();"
@@ -143,11 +143,21 @@ def drive(window, result, scenario):
                 key = (st["det"], st["open"], st["summary"], st["answer"] != "")
                 if not seen or seen[-1][0] != key:
                     seen.append((key, st["think"], st["answer"]))
+
+                if scenario == "think_reopen":
+                    d = f"{LAST}.querySelector('details.think')"
+                    if st["det"] and st["open"] and st["answer"] == "" and "closed_early" not in result:
+                        js(window, f"{d}.open = false; 0")  # 생각하는 도중 사용자가 직접 닫는다
+                        result["closed_early"] = True
+                    elif st["answer"] != "" and result.get("closed_early") and "reopened_during" not in result:
+                        js(window, f"{d}.open = true; 0")  # 답이 흐르는 도중에 다시 연다
+                        result["reopened_during"] = True
                 if st["status"]:
                     result["final"] = st
                     break
                 time.sleep(0.02)
             result["seen"] = seen
+            result["open_at_end"] = json.loads(js(window, probe))["open"]
             # 사용자가 접힌 블록을 다시 펼 수 있다
             js(window, f"{LAST}.querySelector('details.think').open = true; 0")
             result["reopened"] = json.loads(js(window, probe))["open"]

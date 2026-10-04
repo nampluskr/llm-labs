@@ -95,8 +95,8 @@
     return thinkEl;
   }
 
-  function collapseThink() {   // 답이 시작되면 접는다. 사용자가 다시 펼 수 있다
-    if (thinkEl && thinkEl.open && !thinkEl.dataset.collapsed) {
+  function collapseThink() {   // 첫 답 토큰에서 한 번만 접는다. 그 뒤 사용자가 펴면 그대로 둔다(미리 접어 둔 경우도 같다)
+    if (thinkEl && !thinkEl.dataset.collapsed) {
       thinkEl.open = false;
       thinkEl.dataset.collapsed = "1";
       thinkEl.querySelector("summary").textContent = "생각 과정";

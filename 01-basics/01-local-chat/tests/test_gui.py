@@ -188,3 +188,16 @@ def test_창은_사고_중에_오류가_나도_사고_과정과_오류를_함께
     final = r["final"]
     assert final["think"] == "생각 중" and "out of memory" in final["answer"]
     assert final["status"] == "오류(other)"
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_생각_중_직접_닫았다가_답_도중_다시_연_블록을_또_접지_않는다(fake, name):
+    fake.capabilities = ["completion", "thinking"]
+    fake.script = lambda h: send_lines(
+        h, [chunk("", thinking="생각"), chunk("답1"), chunk("답2"), chunk("답3"), chunk("답4"), done_chunk(4, 1_000_000_000)], delay=0.3
+    )
+    r = run_driver(name, fake.host, "think_reopen")
+    assert "driver_error" not in r, r
+    assert r.get("closed_early") is True and r.get("reopened_during") is True  # 생각 중에 직접 닫고, 답이 흐르는 도중 다시 열었다
+    assert r["final"]["answer"] == "답1답2답3답4"
+    assert r["open_at_end"] is True  # 다시 연 블록을 다음 토큰이 또 접지 않는다

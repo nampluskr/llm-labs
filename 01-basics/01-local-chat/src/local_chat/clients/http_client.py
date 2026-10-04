@@ -33,7 +33,7 @@ class HttpClient:
                         return
                     message = d.get("message", {})
                     thought = thinking_text(message.get("thinking"))
-                    if thought:
+                    if thought and think:  # think=False면 사고 과정은 오지 않는 것이 계약이다. 와도 내보내지 않는다
                         yield Thinking(thought)
                     piece = message.get("content")
                     if piece is not None and not isinstance(piece, str):

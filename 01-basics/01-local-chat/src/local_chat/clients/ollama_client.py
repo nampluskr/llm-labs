@@ -19,7 +19,7 @@ class OllamaClient:
             stream = self._client.chat(model=model, messages=messages, options=options, think=think, stream=True)
             for chunk in stream:
                 thought = thinking_text(chunk.message.thinking)
-                if thought:
+                if thought and think:  # think=False면 사고 과정은 오지 않는 것이 계약이다. 와도 내보내지 않는다
                     yield Thinking(thought)
                 piece = chunk.message.content
                 if piece:

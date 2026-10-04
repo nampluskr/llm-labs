@@ -35,7 +35,7 @@ class LangchainClient:
             stream = llm.stream([_ROLES[m["role"]](m["content"]) for m in messages], options=options)
             for chunk in stream:
                 thought = thinking_text(chunk.additional_kwargs.get("reasoning_content"))
-                if thought:
+                if thought and think:  # think=False면 사고 과정은 오지 않는 것이 계약이다. 와도 내보내지 않는다
                     yield Thinking(thought)
                 if chunk.content:
                     yield Token(chunk.content)

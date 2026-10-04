@@ -513,3 +513,42 @@ def test_think를_안_주면_꺼진_채_호출한다():
     session, _ = make(client)
     ask(session, "q")
     assert client.thinks == [False]
+
+
+def test_사고_이벤트_전달이_실패하면_다음_이벤트를_기다리지_않고_바로_풀린다():
+    gate = threading.Event()
+
+    def thinks_then_block(text):
+        yield Thinking("r")
+        gate.wait(10)  # 다음 이벤트가 오지 않는다(서버 멈춤)
+        yield Token("늦음")
+        yield Done(1, 1)
+
+    client = ScriptedClient(thinks_then_block)
+
+    def failing_emit(ev):
+        raise RuntimeError("window destroyed")
+
+    session = ChatSession(client, "m", OPTIONS, failing_emit, think=True)
+    t0 = time.perf_counter()
+    session.send("q")
+    assert session.join(2)  # 막힌 읽기가 풀리기를 기다리지 않는다
+    assert time.perf_counter() - t0 < 2
+    assert session.send("q2") == {"ok": True}  # busy가 풀려 있다
+    gate.set()
+    session.join(5)
+
+
+def test_토큰_전달이_실패해도_막힌_읽기를_기다리지_않는다():
+    gate = threading.Event()
+
+    def token_then_block(text):
+        yield Token("a")
+        gate.wait(10)
+        yield Done(1, 1)
+
+    session = ChatSession(ScriptedClient(token_then_block), "m", OPTIONS, lambda ev: (_ for _ in ()).throw(RuntimeError("x")))
+    session.send("q")
+    assert session.join(2)
+    assert session.turn_count == 0  # 전달되지 않은 토큰뿐이라 남기지 않는다
+    gate.set()

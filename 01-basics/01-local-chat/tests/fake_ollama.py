@@ -26,6 +26,7 @@ class FakeOllama:
         self.requests = []
         self.show_requests = []
         self.capabilities = ["completion"]  # 사고 과정을 지원하는 모델이면 "thinking"을 더한다
+        self.show_script = None  # 주면 /api/show 응답을 직접 쓴다(느린 응답 시험)
         self.script = None
         self.disconnected = threading.Event()
         owner = self
@@ -38,6 +39,9 @@ class FakeOllama:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 if self.path == "/api/show":
                     owner.show_requests.append(body)
+                    if owner.show_script is not None:
+                        owner.show_script(self)
+                        return
                     send_lines(self, [{"model": body.get("model"), "capabilities": owner.capabilities}])
                     return
                 owner.requests.append(body)

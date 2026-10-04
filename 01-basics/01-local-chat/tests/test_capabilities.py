@@ -25,3 +25,40 @@ def test_capabilities_필드가_없거나_이상해도_False(fake):
     for bad in (None, "thinking", 5):
         fake.capabilities = bad
         assert supports_thinking(fake.host, "m") is False, bad
+
+
+def test_응답을_조금씩_흘려도_전체_시간_안에_포기한다(fake):
+    """각 청크가 읽기 시간 안에 도착해도 전체가 오래 걸리면 False로 돌아와 창 열기를 막지 않는다."""
+    import time
+
+    from fake_ollama import send_headers
+
+    def trickle(h):
+        send_headers(h)
+        try:
+            for _ in range(40):
+                h.wfile.write(b" ")
+                h.wfile.flush()
+                time.sleep(0.25)
+        except OSError:
+            pass
+
+    fake.show_script = trickle
+    t0 = time.perf_counter()
+    assert supports_thinking(fake.host, "m", timeout=1.0) is False
+    assert time.perf_counter() - t0 < 3
+
+
+def test_너무_큰_응답은_False(fake):
+    from fake_ollama import send_headers
+
+    def huge(h):
+        send_headers(h)
+        try:
+            h.wfile.write(b" " * 2_000_000)
+            h.wfile.flush()
+        except OSError:
+            pass
+
+    fake.show_script = huge
+    assert supports_thinking(fake.host, "m", timeout=3.0) is False

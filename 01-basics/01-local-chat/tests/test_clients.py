@@ -276,3 +276,10 @@ def test_문자열이_아닌_thinking은_세_층_모두_Error(fake):
         events = list(c.stream(MESSAGES, model="m", options=OPTIONS, think=True))
         assert events[0] == Token("a"), name
         assert isinstance(events[-1], Error) and len(events) == 2, name
+
+
+def test_think가_꺼져_있으면_서버가_사고_과정을_보내도_Thinking을_내지_않는다(fake):
+    fake.script = lambda h: send_lines(h, [chunk("", thinking="몰래"), chunk("답", thinking="또"), done_chunk(1, 1_000_000_000)])
+    for name, c in clients(fake.host):
+        events = list(c.stream(MESSAGES, model="m", options=OPTIONS, think=False))
+        assert events == [Token("답"), Done(1, 1_000_000_000)], name
