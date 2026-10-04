@@ -57,6 +57,8 @@
   let current = null;   // 지금 채워지는 답변 말풍선
   let busy = false;
   let ready = false;   // pywebview 브리지가 준비되면 true. 그 전에는 보내지 않는다
+  let initStarted = false;
+  let seq = 0;   // 보낼 때마다 올린다. 늦게 돌아온 응답이 다른 질문의 화면을 건드리지 못하게 한다
 
   function setBusy(b) {
     busy = b;
@@ -114,8 +116,9 @@
     }
     setBusy(true);
     statusEl.textContent = "";
-    addMsg("user", text);
-    current = addMsg("assistant", "");
+    const id = ++seq;
+    const userEl = addMsg("user", text);
+    const bubble = current = addMsg("assistant", "");
     input.value = "";
     let r;
     try {
@@ -123,11 +126,13 @@
     } catch (e) {   // 브리지 호출이 실패하면 어떤 요청도 시작되지 않았다
       r = { ok: false, reason: "bridge" };
     }
-    if (!r.ok) {   // 거절되거나 실패하면 방금 만든 말풍선을 되돌리고 입력을 복구한다
-      log.removeChild(current); log.removeChild(log.lastElementChild);
-      current = null; input.value = text; setBusy(false);
-      statusEl.textContent = r.reason === "busy" ? "이전 답변을 처리 중입니다." : "보내지 못했습니다. 다시 시도하세요.";
-    }
+    if (r.ok) return;
+    // 거절되거나 실패했다. 이 질문이 아직 진행 중인 턴일 때만 화면을 되돌린다.
+    // 그 사이 중단됐거나 다음 질문이 시작됐다면 늦게 온 거절이 남의 화면을 지우지 않게 건드리지 않는다.
+    if (id !== seq || current !== bubble) return;
+    log.removeChild(bubble); log.removeChild(userEl);
+    current = null; input.value = text; setBusy(false);
+    statusEl.textContent = r.reason === "busy" ? "이전 답변을 처리 중입니다." : "보내지 못했습니다. 다시 시도하세요.";
   }
 
   document.getElementById("form").addEventListener("submit", (e) => { e.preventDefault(); send(); });
@@ -137,12 +142,17 @@
   stopBtn.addEventListener("click", () => { if (bridgeReady()) window.pywebview.api.stop(); });
 
   async function init() {
-    if (ready || !bridgeReady()) return;
-    const info = await window.pywebview.api.info();
-    document.getElementById("title").textContent = "local-chat · " + info.client;
-    document.getElementById("info").textContent = info.model + " · num_ctx " + info.num_ctx + " · temperature " + info.temperature;
-    ready = true;
-    setBusy(false);   // 보내기 버튼을 연다
+    if (ready || initStarted || !bridgeReady()) return;
+    initStarted = true;   // 이벤트와 직접 호출이 겹쳐도 한 번만 한다
+    try {
+      const info = await window.pywebview.api.info();
+      document.getElementById("title").textContent = "local-chat · " + info.client;
+      document.getElementById("info").textContent = info.model + " · num_ctx " + info.num_ctx + " · temperature " + info.temperature;
+      ready = true;
+      setBusy(false);   // 보내기 버튼을 연다
+    } catch (e) {
+      initStarted = false;   // 다음 시도(pywebviewready)에서 다시 한다
+    }
   }
   window.addEventListener("pywebviewready", init);
   init();   // 이벤트가 이미 지나갔을 때를 대비한다

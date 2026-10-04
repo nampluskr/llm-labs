@@ -11,8 +11,9 @@ from fake_ollama import chunk, done_chunk, send_body, send_headers, send_lines
 from local_chat.clients import CLIENTS
 
 
-def run_driver(name, host, scenario="ok"):
-    p = subprocess.run([sys.executable, "tests/gui_driver.py", name, host, scenario], capture_output=True, timeout=90)
+def run_driver(name, host, scenario="ok", entry=False):
+    cmd = [sys.executable, "tests/gui_driver.py", name, host, scenario] + (["entry"] if entry else [])
+    p = subprocess.run(cmd, capture_output=True, timeout=90)
     out = p.stdout.decode("utf-8", "replace")
     line = next((l for l in out.splitlines() if l.startswith("RESULT ")), None)
     assert line, f"드라이버가 결과를 내지 못했다 (exit {p.returncode})\n{out}\n{p.stderr.decode('utf-8', 'replace')[-2000:]}"
@@ -62,7 +63,11 @@ def test_창에서_중단_버튼은_서버가_멈춰도_바로_먹고_다음_질
         if len(calls) == 1:
             send_headers(h)
             send_body(h, [chunk("가")])
-            release.wait(30)  # 첫 요청은 토큰 하나 뒤 응답이 멈춘다
+            release.wait(1.5)  # 첫 요청은 토큰 하나 뒤 응답이 멈췄다가, 취소된 뒤에 뒤늦게 토큰을 더 보낸다
+            try:
+                send_body(h, [chunk("늦음"), done_chunk(2, 1_000_000_000)])
+            except OSError:
+                pass  # 클라이언트가 이미 연결을 닫았다
         else:
             send_lines(h, [chunk("나"), done_chunk(1, 1_000_000_000)])
 
@@ -76,6 +81,8 @@ def test_창에서_중단_버튼은_서버가_멈춰도_바로_먹고_다음_질
     assert r["stopped"] and r["stop_seconds"] < 3, r  # 막힌 읽기(타임아웃 300초)를 기다리지 않았다
     assert r["after"] == {"send": False, "stop": True, "status": "중단했습니다"}
     assert r["next"]["status"] == "1토큰 · 1.0 tok/s" and r["next"]["final"] == "나" and r["messages"] == 4  # 다음 답이 실제로 성공했다
+    # 취소된 첫 요청의 서버가 뒤늦게 보낸 토큰·done이 창에 나타나지 않는다(창이 살아 있는 동안 관찰했다)
+    assert r["late"] == {"final": "나", "status": "1토큰 · 1.0 tok/s", "send": False, "stop": True, "messages": 4}, r["late"]
     # 중단된 턴의 받은 부분("가")이 두 번째 요청의 문맥에 있다
     contents = [m["content"] for m in fake.requests[1]["messages"]]
     assert contents[1:] == ["멈출 질문", "가", "다음 질문"]
@@ -112,3 +119,24 @@ def test_창은_브리지가_없거나_호출이_실패해도_UI가_막히지_�
     assert r["rejected"] == {"messages": 0, "input": "질문", "send_disabled": False, "stop_disabled": True, "status": "보내지 못했습니다. 다시 시도하세요."}
     assert r["recovered"]["final"] == "답" and r["recovered"]["status"] == "1토큰 · 1.0 tok/s"
     assert fake.requests and len(fake.requests) == 1  # 실패한 두 번은 서버까지 가지 않았다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_앱_진입점으로_뜬_창도_질문에_답하고_인자가_전달된다(fake, name):
+    """build()가 아니라 app_<이름>.main(argv)로 창을 띄운다: argparse → build → start 전체 경로."""
+    fake.script = lambda h: send_lines(h, [chunk("가"), chunk("나"), done_chunk(2, 1_000_000_000)])
+    r = run_driver(name, fake.host, "ok", entry=True)
+    assert "driver_error" not in r, r
+    assert name in r["title"] and "qwen3:4b" in r["info"]  # --model 인자가 화면에 반영됐다
+    assert r["first"]["final"] == "가나" and r["first"]["status"] == "2토큰 · 2.0 tok/s"
+    assert fake.requests[0]["model"] == "qwen3:4b"  # --model 인자가 요청에 실렸다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_늦게_도착한_전송_거부가_다음_질문의_화면을_지우지_않는다(fake, name):
+    fake.script = lambda h: send_lines(h, [chunk("B1"), chunk("B2"), chunk("B3"), chunk("B4"), done_chunk(4, 1_000_000_000)], delay=0.5)
+    r = run_driver(name, fake.host, "late_reject")
+    assert "driver_error" not in r, r
+    # A의 거부(0.9초)가 B의 답변(약 2초) 도중에 도착했지만 B의 화면은 그대로다
+    assert r["mid"]["t"].startswith("B1") and r["mid"]["send"] is True and r["mid"]["stop"] is False and r["mid"]["messages"] == 4, r["mid"]
+    assert r["end"] == {"final": "B1B2B3B4", "status": "4토큰 · 4.0 tok/s", "messages": 4}

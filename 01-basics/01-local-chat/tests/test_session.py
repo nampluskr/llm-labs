@@ -435,3 +435,29 @@ def test_새_턴의_토큰은_이전_턴의_종료_이벤트_뒤에_나간다():
     assert session.join(10)
     order = [e.get("text") or e["type"] for e in events]
     assert order == ["A1", "A2", "done", "B1", "B2", "done"], order
+
+
+def test_emit_콜백_안에서_중단해도_방금_전달한_토큰은_답에_남는다():
+    holder = {}
+    events = []
+
+    def emit(ev):
+        events.append(ev)
+        if ev["type"] == "token" and ev["text"] == "a":
+            holder["s"].stop()  # 화면에 "a"를 보여 주는 바로 그 호출 안에서 중단
+
+    def two(text):
+        yield Token("a")
+        yield Token("b")
+        yield Done(2, 1)
+
+    client = ScriptedClient(two)
+    session = ChatSession(client, "m", OPTIONS, emit)
+    holder["s"] = session
+    session.send("q")
+    assert session.join(5)
+    assert [e["type"] for e in events] == ["token", "stopped"]
+    assert session.turn_count == 1
+    session.send("다음")
+    session.join(5)
+    assert client.calls[-1][1:-1] == [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]

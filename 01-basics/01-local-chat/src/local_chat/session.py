@@ -10,7 +10,7 @@ emit하는 이벤트(dict):
 세 종료 이벤트(done·stopped·error) 중 정확히 하나가 마지막에 온다.
 
 동시성 규칙 (_emit_lock 하나가 이벤트 순서와 기록의 일관성을 지킨다)
-  - 답(turn.reply)은 emit이 성공한 토큰만 쌓는다. 사용자가 못 본 토큰은 문맥에 남지 않는다.
+  - 답(turn.reply)에는 emit이 성공한 토큰만 남는다(먼저 쌓고 실패하면 되돌린다). 사용자가 못 본 토큰은 문맥에 남지 않는다.
   - 토큰 emit, 기록 확정, 종료 이벤트 emit은 모두 _emit_lock 안에서 한다. 기록 확정과 종료
     이벤트 emit은 같은 락 구간이라, 확정 직후 새 질문이 받아져도 그 턴의 토큰은 이전 턴의
     종료 이벤트 뒤에 나간다.
@@ -133,8 +133,11 @@ class ChatSession:
                     break
                 if isinstance(event, Token):
                     with self._emit_lock:
-                        if self._emit(turn, {"type": "token", "text": event.text}):
-                            turn.reply.append(event.text)  # 전달된 토큰만 답으로 남긴다
+                        # 먼저 쌓고 emit이 실패하면 되돌린다. emit 콜백이 같은 스레드에서 stop()을 불러도(RLock)
+                        # 방금 전달한 토큰이 답에 들어 있다. 다른 스레드의 stop()은 락 때문에 끼어들 수 없다
+                        turn.reply.append(event.text)
+                        if not self._emit(turn, {"type": "token", "text": event.text}):
+                            turn.reply.pop()  # 전달되지 않은 토큰은 답에 남기지 않는다
                 elif isinstance(event, Done):
                     final = {"type": "done", "eval_count": event.eval_count, "tok_s": round(event.tokens_per_second, 1)}
                     break

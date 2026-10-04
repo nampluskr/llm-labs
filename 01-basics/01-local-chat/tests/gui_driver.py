@@ -1,7 +1,10 @@
-"""실제 pywebview 창을 띄워 DOM을 조작·관찰한다. 사용: python gui_driver.py <client> <host> <scenario>
-시나리오: ok(두 질문) · stop(중단 버튼) · many(12번 연속 질문) · escape(HTML 이스케이프) · bridge(브리지 없음·호출 거부)
+"""실제 pywebview 창을 띄워 DOM을 조작·관찰한다. 사용: python gui_driver.py <client> <host> <scenario> [entry]
+시나리오: ok(두 질문) · stop(중단 버튼, 취소된 요청의 늦은 이벤트까지 관찰) · many(12번 연속 질문)
+         · escape(HTML 이스케이프) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
+entry를 주면 build()가 아니라 앱 진입점 local_chat.app_<client>.main(argv)로 창을 띄운다.
 결과를 JSON 한 줄로 stdout에 낸다. pytest(test_gui.py)가 서브프로세스로 돌린다."""
 
+import importlib
 import json
 import sys
 import time
@@ -12,6 +15,11 @@ from local_chat.clients import CLIENTS
 from local_chat.webapp import build
 
 LAST = "document.querySelector('.msg.assistant:last-of-type')"
+SNAP = (
+    "JSON.stringify({messages: document.querySelectorAll('.msg').length, input: document.getElementById('input').value, "
+    "send_disabled: document.getElementById('send').disabled, stop_disabled: document.getElementById('stop').disabled, "
+    "status: document.getElementById('status').textContent})"
+)
 
 
 def js(window, code):
@@ -81,28 +89,45 @@ def drive(window, result, scenario):
             result["after"] = {"send": after["send"], "stop": after["stop"], "status": after["status"]}
             result["next"] = ask(window, "다음 질문")  # 서버가 멈춰 있어도 새 질문이 나간다
             result["messages"] = js(window, "document.querySelectorAll('.msg').length")
+            time.sleep(2.5)  # 취소된 첫 요청의 서버가 뒤늦게 토큰을 보내는 동안 창을 지켜본다
+            late = state(window)
+            result["late"] = {"final": late["t"], "status": late["status"], "send": late["send"], "stop": late["stop"],
+                              "messages": js(window, "document.querySelectorAll('.msg').length")}
         elif scenario == "many":
             finals = []
             for i in range(1, 13):
-                finals.append(ask(window, f"질문{i}")["status"])
+                finals.append(ask(window, f"질문{i}")["status"])  # 종료 이벤트를 받은 즉시 다음 질문을 보낸다
                 js(window, "document.getElementById('status').textContent = ''; 0")
             result["statuses"] = finals
         elif scenario == "bridge":
-            snap = "JSON.stringify({messages: document.querySelectorAll('.msg').length, input: document.getElementById('input').value, send_disabled: document.getElementById('send').disabled, stop_disabled: document.getElementById('stop').disabled, status: document.getElementById('status').textContent})"
             wait(window, "document.getElementById('send').disabled === false", 10)
             # 1) 브리지가 없는 것처럼 만든다
             js(window, "window.__api = window.pywebview.api; window.pywebview.api = undefined; 0")
             submit(window, "질문")
-            result["no_bridge"] = json.loads(js(window, snap))
+            result["no_bridge"] = json.loads(js(window, SNAP))
             js(window, "window.pywebview.api = window.__api; 0")
             # 2) 호출이 거부(reject)되는 것처럼 만든다
             js(window, "window.__send = window.pywebview.api.send; window.pywebview.api.send = () => Promise.reject(new Error('x')); 0")
             submit(window, "질문")
             wait(window, "document.querySelectorAll('.msg').length === 0 && document.getElementById('send').disabled === false", 5)
-            result["rejected"] = json.loads(js(window, snap))
+            result["rejected"] = json.loads(js(window, SNAP))
             js(window, "window.pywebview.api.send = window.__send; 0")
             # 3) 복구한 뒤 정상으로 보낸다
             result["recovered"] = ask(window, "질문")
+        elif scenario == "late_reject":
+            wait(window, "document.getElementById('send').disabled === false", 10)
+            # A: 브리지 호출이 늦게(0.9초 뒤) 거부된다. 그 사이 A의 턴이 끝난 것으로 처리(stopped)되고 B가 시작된다
+            js(window, "window.__send = window.pywebview.api.send; window.pywebview.api.send = () => new Promise((_, rej) => setTimeout(() => rej(new Error('late')), 900)); 0")
+            submit(window, "A")
+            js(window, "window.onChatEvent({type: 'stopped'}); 0")  # 파이썬이 A를 중단했다고 알려 온 것처럼
+            js(window, "window.pywebview.api.send = window.__send; 0")
+            submit(window, "B")  # 실제 백엔드로 B를 보낸다(서버가 천천히 답한다)
+            time.sleep(1.3)  # A의 거부가 B의 답변 도중에 도착한다
+            mid = state(window)
+            result["mid"] = {"t": mid["t"], "send": mid["send"], "stop": mid["stop"], "messages": js(window, "document.querySelectorAll('.msg').length")}
+            wait(window, "document.getElementById('status').textContent.includes('tok/s')", 15)
+            end_state = state(window)
+            result["end"] = {"final": end_state["t"], "status": end_state["status"], "messages": js(window, "document.querySelectorAll('.msg').length")}
         elif scenario == "escape":
             result["first"] = ask(window, "태그")
             result["bold_elements"] = js(window, "document.querySelectorAll('.msg.assistant b').length")
@@ -114,7 +139,15 @@ def drive(window, result, scenario):
 
 if __name__ == "__main__":
     client_name, host, scenario = sys.argv[1:4]
+    entry = len(sys.argv) > 4 and sys.argv[4] == "entry"
     result = {}
-    window, api = build(CLIENTS[client_name](host=host))
-    webview.start(drive, (window, result, scenario))
+    if entry:
+        # 앱 진입점 main(argv)이 argparse → build → webview.start까지 실제로 돌게 하고, start만 감싸 창을 조작한다
+        module = importlib.import_module(f"local_chat.app_{client_name}")
+        real_start = webview.start
+        webview.start = lambda: real_start(drive, (webview.windows[0], result, scenario))
+        module.main(["--host", host, "--model", "qwen3:4b"])
+    else:
+        window, api = build(CLIENTS[client_name](host=host))
+        webview.start(drive, (window, result, scenario))
     print("RESULT " + json.dumps(result))
