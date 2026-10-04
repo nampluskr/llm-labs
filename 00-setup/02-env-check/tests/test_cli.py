@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from env_check import cli
@@ -26,10 +27,13 @@ class FakeClient:
     "size, vram, expected",
     [
         (1000, 1000, "100% GPU"),
-        (1000, 1200, "100% GPU"),
         (1000, 0, "100% CPU"),
         (1000, 750, "25%/75% CPU/GPU"),
-        (0, 0, "알 수 없음"),
+        (1000, 755, "25%/75% CPU/GPU"),
+        (1000, 995, "1%/99% CPU/GPU"),
+        (1000, 1200, "알 수 없음"),
+        (0, 0, "100% CPU"),
+        (0, 5, "알 수 없음"),
     ],
 )
 def test_processor_label(size, vram, expected):
@@ -72,3 +76,40 @@ def test_main_server_down(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "오류" in captured.err and "127.0.0.1:1" in captured.err
     assert captured.out == ""
+
+
+def fake_get(response):
+    return lambda url, **kw: response
+
+
+def version_response(status=200, **kw):
+    return httpx.Response(status, request=httpx.Request("GET", "http://x/api/version"), **kw)
+
+
+def test_get_version_parses_response(monkeypatch):
+    monkeypatch.setattr(cli.httpx, "get", fake_get(version_response(json={"version": "0.35.1"})))
+    assert cli.get_version("http://x") == "0.35.1"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        version_response(content=b"<html>not ollama</html>"),
+        version_response(json={}),
+        version_response(status=500, content=b""),
+    ],
+    ids=["html", "no-version-key", "http-500"],
+)
+def test_main_unexpected_version_response(monkeypatch, capsys, response):
+    monkeypatch.setattr(cli.httpx, "get", fake_get(response))
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert "오류" in captured.err and "Traceback" not in captured.err
+    assert captured.out == ""
+
+
+def test_main_prints_connection_and_version(monkeypatch, capsys):
+    patch_server(monkeypatch, [], [])
+    assert cli.main([]) == 0
+    out = capsys.readouterr().out
+    assert "연결됨" in out and "버전: 0.35.1" in out

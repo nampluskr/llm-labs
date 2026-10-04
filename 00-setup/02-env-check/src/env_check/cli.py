@@ -1,3 +1,4 @@
+import math
 import sys
 
 import httpx
@@ -19,14 +20,14 @@ def get_models(client):
 
 def processor_label(size, size_vram):
     """`ollama ps`의 PROCESSOR 열과 같은 규칙으로 GPU/CPU 비율을 만든다."""
-    if not size:
-        return "알 수 없음"
-    if size_vram >= size:
-        return "100% GPU"
-    if size_vram <= 0:
+    if size_vram == 0:
         return "100% CPU"
-    gpu = size_vram / size * 100
-    return f"{100 - gpu:.0f}%/{gpu:.0f}% CPU/GPU"
+    if size_vram == size:
+        return "100% GPU"
+    if size_vram > size or size == 0:
+        return "알 수 없음"
+    cpu = math.floor((size - size_vram) / size * 100 + 0.5)
+    return f"{cpu}%/{100 - cpu}% CPU/GPU"
 
 
 def get_loaded(client):
@@ -46,8 +47,8 @@ def main(argv=None):
         client = ollama.Client(host=HOST, timeout=TIMEOUT)
         models = get_models(client)
         loaded = get_loaded(client)
-    except (httpx.HTTPError, ConnectionError, ollama.ResponseError) as e:
-        print(f"오류: Ollama 서버를 확인할 수 없다 ({HOST}): {e}", file=sys.stderr)
+    except (httpx.HTTPError, ConnectionError, ollama.ResponseError, ValueError, KeyError) as e:
+        print(f"오류: Ollama 서버를 확인할 수 없다 ({HOST}): {type(e).__name__}: {e}", file=sys.stderr)
         return 1
 
     print(f"Ollama 서버: 연결됨 ({HOST})")
