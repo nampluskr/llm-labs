@@ -31,6 +31,8 @@
   #settings input { width: 78px; }
   #settings select { max-width: 260px; }
   #settings :disabled { opacity: .5; }
+  #settings .grow { flex: 1; }
+  #settings button { padding: 3px 12px; background: transparent; color: var(--text); }
   #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
   .msg { max-width: 82%; padding: 9px 13px; border-radius: 12px; border: 1px solid var(--border);
          white-space: pre-wrap; word-break: break-word; }
@@ -57,6 +59,9 @@
   <label>모델 <select id="model" disabled></select></label>
   <label>num_ctx <input id="numctx" type="number" min="4096" max="8192" step="512" disabled></label>
   <label>temperature <input id="temp" type="number" min="0" max="2" step="0.1" disabled></label>
+  <span class="grow"></span>
+  <button id="save" type="button" disabled>대화 저장</button>
+  <button id="open" type="button" disabled>대화 열기</button>
 </div>
 <div id="log" aria-live="polite"></div>
 <div id="status"></div>
@@ -76,6 +81,8 @@
   const modelSel = document.getElementById("model");
   const numctxEl = document.getElementById("numctx");
   const tempEl = document.getElementById("temp");
+  const saveBtn = document.getElementById("save");
+  const openBtn = document.getElementById("open");
   let busy = false;
   let locked = false;   // 모델 전환·옵션 적용 중
   let ready = false;   // pywebview 브리지가 준비되면 true. 그 전에는 보내지 않는다
@@ -86,7 +93,7 @@
     sendBtn.disabled = busy || locked || !ready;
     stopBtn.disabled = !busy;
     const off = busy || locked || !ready;   // 답변 중·적용 중에는 모델과 옵션을 바꿀 수 없다
-    modelSel.disabled = numctxEl.disabled = tempEl.disabled = off;
+    modelSel.disabled = numctxEl.disabled = tempEl.disabled = saveBtn.disabled = openBtn.disabled = off;
   }
 
   function setBusy(b) {
@@ -295,6 +302,38 @@
   }
   numctxEl.addEventListener("change", commitOptions);
   tempEl.addEventListener("change", commitOptions);
+
+  function baseName(path) {
+    return String(path).split(/[\\/]/).pop();
+  }
+
+  async function runFile(call, okMessage) {
+    setLocked(true);   // 대화상자를 여는 동안과 파일을 읽고 쓰는 동안 다른 조작을 막는다
+    let r;
+    try {
+      r = await call();
+    } catch (e) {
+      r = { ok: false, message: "처리하지 못했습니다." };
+    }
+    statusEl.textContent = r.ok ? okMessage(r) : (r.message || "처리하지 못했습니다.");
+    setLocked(false);
+    return r;
+  }
+
+  saveBtn.addEventListener("click", () => {
+    if (locked || busy || !bridgeReady()) return;
+    runFile(() => window.pywebview.api.save_chat(), (r) => r.count + "개 메시지를 저장했습니다: " + baseName(r.path));
+  });
+
+  openBtn.addEventListener("click", async () => {
+    if (locked || busy || !bridgeReady()) return;
+    const r = await runFile(() => window.pywebview.api.load_chat(), (r) => r.count + "개 메시지를 불러왔습니다: " + baseName(r.path));
+    if (!r.ok) return;   // 실패하면 화면의 대화는 그대로다
+    log.textContent = "";   // 불러온 대화로 화면을 다시 그린다
+    current = null;
+    thinkEl = null;
+    for (const m of r.messages) addMsg(m.role === "user" ? "user" : "assistant", m.content);
+  });
 
   async function init() {
     if (ready || initStarted || !bridgeReady()) return;

@@ -1,11 +1,12 @@
 """실제 pywebview 창을 띄워 DOM을 조작·관찰한다. 사용: python gui_driver.py <client> <host> <scenario> [entry]
 시나리오: ok(두 질문) · stop(중단 버튼, 취소된 요청의 늦은 이벤트까지 관찰) · many(12번 연속 질문)
-         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
+         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · save·load·load_corrupt(대화 저장·열기) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
 entry를 주면 build()가 아니라 앱 진입점 local_chat.app_<client>.main(argv)로 창을 띄운다.
 결과를 JSON 한 줄로 stdout에 낸다. pytest(test_gui.py)가 서브프로세스로 돌린다."""
 
 import importlib
 import json
+import os
 import sys
 import time
 
@@ -278,6 +279,27 @@ def drive(window, result, scenario):
             time.sleep(0.3)
             result["after"] = json.loads(js(window, "JSON.stringify({model: document.getElementById('model').value, numctx: document.getElementById('numctx').value, info: document.getElementById('info').textContent})"))
             result["ask"] = ask(window, "질문")
+        elif scenario in ("save", "load", "load_corrupt"):
+            wait(window, "document.getElementById('save').disabled === false", 15)
+            bubbles = "JSON.stringify(Array.from(document.querySelectorAll('.msg')).map(m => [m.classList.contains('user') ? 'user' : 'assistant', m.textContent]))"
+            if scenario == "save":
+                ask(window, "첫째 질문 😊")
+                ask(window, "둘째\n질문")
+                js(window, "document.getElementById('status').textContent = ''; document.getElementById('save').click(); 0")
+                result["saved"] = wait(window, "document.getElementById('status').textContent.includes('저장')", 15)
+                result["status"] = js(window, "document.getElementById('status').textContent")
+                result["bubbles"] = json.loads(js(window, bubbles))
+            else:
+                if scenario == "load_corrupt":
+                    ask(window, "지켜야 할 질문")  # 화면에 대화가 있는 상태에서 손상된 파일을 연다
+                result["before"] = json.loads(js(window, bubbles))
+                js(window, "document.getElementById('status').textContent = ''; document.getElementById('open').click(); 0")
+                wait(window, "document.getElementById('status').textContent.length > 0", 15)
+                time.sleep(0.3)
+                result["status"] = js(window, "document.getElementById('status').textContent")
+                result["bubbles"] = json.loads(js(window, bubbles))
+                result["controls"] = json.loads(js(window, "JSON.stringify({send: document.getElementById('send').disabled, save: document.getElementById('save').disabled, open: document.getElementById('open').disabled})"))
+                result["next"] = ask(window, "넷째 질문")
         elif scenario == "escape":
             result["first"] = ask(window, "태그")
             result["bold_elements"] = js(window, "document.querySelectorAll('.msg.assistant b').length")
@@ -299,5 +321,8 @@ if __name__ == "__main__":
         module.main(["--host", host, "--model", "qwen3:4b"])
     else:
         window, api = build(CLIENTS[client_name](host=host))
+        pick = os.environ.get("GUI_DRIVER_PICK")
+        if pick:  # 파일 대화상자 대신 시험이 정한 경로를 쓴다
+            api._pick_path = lambda mode: pick
         webview.start(drive, (window, result, scenario))
     print("RESULT " + json.dumps(result))

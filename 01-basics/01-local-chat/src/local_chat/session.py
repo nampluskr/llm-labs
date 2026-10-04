@@ -73,6 +73,26 @@ class ChatSession:
     def think(self) -> bool:
         return self._think
 
+    def export_messages(self) -> list[dict] | None:
+        """끝난 턴의 질문·답을 messages 배열(user, assistant 번갈아)로 돌려준다. 답변 중이면 None(진행 중인 턴은 저장하지 않는다)."""
+        with self._lock:
+            if self._busy:
+                return None
+            messages = []
+            for question, answer in self._turns:
+                messages.append({"role": "user", "content": question})
+                messages.append({"role": "assistant", "content": answer})
+            return messages
+
+    def restore(self, messages: list[dict]) -> dict:
+        """대화를 messages(검증된 user, assistant 쌍)로 통째로 바꾼다. 답변 중에는 거절한다. 다음 질문의 문맥은 이 기록의 직전 10턴이다."""
+        turns = [(messages[i]["content"], messages[i + 1]["content"]) for i in range(0, len(messages), 2)]
+        with self._lock:
+            if self._busy:
+                return {"ok": False, "reason": "busy"}
+            self._turns = turns
+        return {"ok": True}
+
     def configure(self, model: str | None = None, options: dict | None = None, think: bool | None = None) -> dict:
         """다음 질문부터 쓸 설정을 바꾼다. 답변 중에는 거절한다(진행 중인 답의 모델·옵션이 바뀌지 않게)."""
         with self._lock:

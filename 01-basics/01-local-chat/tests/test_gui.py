@@ -1,6 +1,7 @@
 """실제 pywebview 창으로 앱 3개를 확인한다: 질문 → 답변이 조금씩 늘며 표시되고, 끝나면 tok/s와 입력이 돌아온다."""
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -11,9 +12,10 @@ from fake_ollama import chunk, done_chunk, send_body, send_headers, send_lines
 from local_chat.clients import CLIENTS
 
 
-def run_driver(name, host, scenario="ok", entry=False):
+def run_driver(name, host, scenario="ok", entry=False, pick=None):
     cmd = [sys.executable, "tests/gui_driver.py", name, host, scenario] + (["entry"] if entry else [])
-    p = subprocess.run(cmd, capture_output=True, timeout=90)
+    env = {**os.environ, **({"GUI_DRIVER_PICK": str(pick)} if pick else {})}
+    p = subprocess.run(cmd, capture_output=True, timeout=90, env=env)
     out = p.stdout.decode("utf-8", "replace")
     line = next((l for l in out.splitlines() if l.startswith("RESULT ")), None)
     assert line, f"드라이버가 결과를 내지 못했다 (exit {p.returncode})\n{out}\n{p.stderr.decode('utf-8', 'replace')[-2000:]}"
@@ -310,3 +312,51 @@ def test_창은_처리_중에_온_다른_변경_이벤트를_받지_않고_화�
     assert r["after"]["numctx"] == "4096" and "num_ctx 4096" in r["after"]["info"]
     assert [u["model"] for u in fake.unloads] == ["qwen3:8b"]  # 전환은 한 번만 일어났다
     assert fake.requests[-1]["model"] == "exaone3.5:7.8b" and fake.requests[-1]["options"]["num_ctx"] == 4096
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창에서_대화를_저장하고_새_창에서_열면_같은_메시지가_복원되고_문맥으로_이어진다(fake, tmp_path, name):
+    from local_chat import conversation
+
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    path = tmp_path / "대화 저장" / "내 대화 😊.json"
+    path.parent.mkdir()
+    saved = run_driver(name, fake.host, "save", pick=path)
+    assert "driver_error" not in saved, saved
+    assert saved["saved"] is True and saved["status"] == "4개 메시지를 저장했습니다: 내 대화 😊.json"
+    expected = [
+        {"role": "user", "content": "첫째 질문 😊"},
+        {"role": "assistant", "content": "답"},
+        {"role": "user", "content": "둘째\n질문"},
+        {"role": "assistant", "content": "답"},
+    ]
+    assert conversation.load_file(path) == expected  # 파일의 내용(한글·이모지·줄바꿈 보존)
+    # 새 창(새 프로세스)에서 연다
+    fake.requests.clear()
+    loaded = run_driver(name, fake.host, "load", pick=path)
+    assert "driver_error" not in loaded, loaded
+    assert loaded["before"] == []  # 새 창은 빈 대화로 시작했다
+    assert loaded["status"] == "4개 메시지를 불러왔습니다: 내 대화 😊.json"
+    # 화면에 같은 개수·순서·role로 복원됐다
+    assert loaded["bubbles"][:4] == [["user", "첫째 질문 😊"], ["assistant", "답"], ["user", "둘째\n질문"], ["assistant", "답"]]
+    assert loaded["controls"] == {"send": False, "save": False, "open": False}  # 불러온 뒤 다시 쓸 수 있다
+    # 복원한 대화가 다음 질문의 문맥으로 서버에 간다
+    contents = [m["content"] for m in fake.requests[-1]["messages"]]
+    assert contents[1:] == ["첫째 질문 😊", "답", "둘째\n질문", "답", "넷째 질문"]
+    assert loaded["next"]["status"] == "1토큰 · 1.0 tok/s"
+    assert len(loaded["bubbles"]) == 4  # 상태 확인 시점(질문 전)의 말풍선 수
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창에서_손상된_파일을_열면_오류를_보이고_화면의_대화는_그대로다(fake, tmp_path, name):
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    path = tmp_path / "깨진 대화.json"
+    path.write_bytes(b'{"messages": [{"role": "user", "content": "q"}, {"role": "assis')
+    r = run_driver(name, fake.host, "load_corrupt", pick=path)
+    assert "driver_error" not in r, r
+    assert r["before"] == [["user", "지켜야 할 질문"], ["assistant", "답"]]
+    assert "JSON" in r["status"] and "손상" in r["status"]
+    assert r["bubbles"] == r["before"]  # 화면의 대화가 그대로다
+    assert r["controls"] == {"send": False, "save": False, "open": False}
+    contents = [m["content"] for m in fake.requests[-1]["messages"]]
+    assert contents[1:] == ["지켜야 할 질문", "답", "넷째 질문"]  # 서버 쪽 대화도 그대로다

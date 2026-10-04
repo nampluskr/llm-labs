@@ -7,6 +7,7 @@ from pathlib import Path
 
 import webview
 
+from . import conversation
 from .capabilities import show_capabilities
 from .defaults import DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_OPTIONS
 from .models import FAILED, NOT_INSTALLED, UNLOADED, list_models, unload_model
@@ -26,6 +27,7 @@ class Api:
         self._config_lock = threading.Lock()  # 모델 전환·옵션 변경을 한 번에 하나씩
         self._state_lock = threading.Lock()  # 전환 표시와 질문 시작을 서로 배타적으로 만든다(짧게만 쥔다)
         self._switching = False  # 모델 전환 중(이전 모델 내리기 포함)에는 질문을 받지 않는다
+        self._pick_path = self._dialog  # (mode) -> 경로 또는 None. 시험에서는 대화상자 대신 경로를 돌려주는 함수로 바꾼다
         self._worker_wait = 3.0  # 전환할 때 중단된 이전 요청의 작업 스레드가 끝나기를 기다리는 시간(초)
         # 설치된 모델 전체(/api/tags). 현재 모델이 목록에 없으면(미설치이거나 목록을 못 받음) 맨 앞에 둔다
         self._catalog = list_models(client.host)
@@ -113,6 +115,56 @@ class Api:
             if not result["ok"]:
                 return {**result, "message": "답변 중에는 바꿀 수 없다"}
             return {"ok": True, "info": self.info()}
+
+    def _dialog(self, mode):
+        """파일 대화상자. 취소하면 None."""
+        if mode == "save":
+            result = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename="chat.json", file_types=("JSON (*.json)",))
+        else:
+            result = self._window.create_file_dialog(webview.FileDialog.OPEN, file_types=("JSON (*.json)",))
+        if not result:
+            return None
+        return result if isinstance(result, str) else result[0]
+
+    def _file_gate(self):
+        """저장·열기를 할 수 없는 상태면 거절 응답을, 아니면 None."""
+        if self._switching:
+            return {"ok": False, "reason": "switching", "message": "모델을 바꾸는 중에는 저장하거나 열 수 없다"}
+        return None
+
+    def save_chat(self, path=None):
+        """지금까지 끝난 대화를 JSON 파일로 저장한다. path가 없으면 대화상자로 묻는다. 답변 중에는 거절한다."""
+        gate = self._file_gate()
+        if gate:
+            return gate
+        path = path or self._pick_path("save")
+        if not path:
+            return {"ok": False, "reason": "cancelled", "message": "저장을 취소했다"}
+        messages = self._session.export_messages()  # 대화상자를 여는 사이에 바뀐 것까지 담도록 경로를 받은 뒤에 읽는다
+        if messages is None:
+            return {"ok": False, "reason": "busy", "message": "답변 중에는 저장할 수 없다"}
+        try:
+            conversation.save_file(path, messages, self._session.model)
+        except conversation.ConversationError as e:
+            return {"ok": False, "reason": "error", "message": str(e)}
+        return {"ok": True, "path": str(path), "count": len(messages)}
+
+    def load_chat(self, path=None):
+        """JSON 파일의 대화로 현재 대화를 통째로 바꾼다. 파일이 올바르지 않으면 현재 대화는 그대로다. 답변 중에는 거절한다."""
+        gate = self._file_gate()
+        if gate:
+            return gate
+        path = path or self._pick_path("open")
+        if not path:
+            return {"ok": False, "reason": "cancelled", "message": "열기를 취소했다"}
+        try:
+            messages = conversation.load_file(path)  # 먼저 검증한다. 실패하면 아래 복원까지 가지 않는다
+        except conversation.ConversationError as e:
+            return {"ok": False, "reason": "error", "message": str(e)}
+        result = self._session.restore(messages)
+        if not result["ok"]:
+            return {**result, "message": "답변 중에는 열 수 없다"}
+        return {"ok": True, "path": str(path), "count": len(messages), "messages": messages}
 
     def info(self):
         options = self._session.options

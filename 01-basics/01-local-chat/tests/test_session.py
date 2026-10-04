@@ -645,3 +645,60 @@ def test_wait_workers는_중단된_턴의_작업_스레드가_끝나기를_기�
     threading.Timer(0.3, gate.set).start()
     assert session.wait_workers(5) is True
     assert session.wait_workers(0) is True  # 더 기다릴 스레드가 없다
+
+
+def test_내보낸_대화는_질문과_답이_번갈아_오고_답변_중에는_내보내지_않는다():
+    gate = threading.Event()
+
+    def slow(text):
+        yield Token("a")
+        gate.wait(5)
+        yield Done(1, 1)
+
+    session, _ = make(ScriptedClient(lambda t: slow(t) if t == "느림" else echo(t)))
+    assert session.export_messages() == []
+    ask(session, "q1")
+    ask(session, "q2")
+    assert session.export_messages() == [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "답:q1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "답:q2"},
+    ]
+    session.send("느림")
+    time.sleep(0.1)
+    assert session.export_messages() is None  # 진행 중인 턴은 저장하지 않는다
+    gate.set()
+    session.join(5)
+
+
+def test_복원하면_대화가_통째로_바뀌고_다음_질문의_문맥은_복원한_기록의_직전_10턴이다():
+    client = ScriptedClient(echo)
+    session, _ = make(client)
+    ask(session, "옛 질문")
+    restored = []
+    for i in range(1, 13):
+        restored += [{"role": "user", "content": f"r{i}"}, {"role": "assistant", "content": f"답{i}"}]
+    assert session.restore(restored) == {"ok": True}
+    assert session.turn_count == 12 and session.export_messages() == restored  # 옛 대화는 사라졌다
+    ask(session, "새 질문")
+    contents = [m["content"] for m in client.calls[-1]]
+    assert len(contents) == 22 and contents[1] == "r3" and contents[-2] == "답12" and contents[-1] == "새 질문"
+    assert "옛 질문" not in contents
+
+
+def test_답변_중에는_복원을_거절하고_대화는_그대로다():
+    gate = threading.Event()
+
+    def slow(text):
+        yield Token("a")
+        gate.wait(5)
+        yield Done(1, 1)
+
+    session, _ = make(ScriptedClient(slow))
+    session.send("q")
+    time.sleep(0.1)
+    assert session.restore([{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}]) == {"ok": False, "reason": "busy"}
+    gate.set()
+    session.join(5)
+    assert session.export_messages() == [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]

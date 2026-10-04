@@ -1,5 +1,6 @@
 """webapp.Api: 모델 목록, 모델 전환(이전 모델 내리기), 옵션 변경. 세 호출 층 모두로 확인한다(창 없이)."""
 
+import json
 import threading
 import time
 
@@ -362,3 +363,217 @@ def test_목록에_없는_현재_모델은_맨_앞에_넣고_능력은_show로_�
     assert r["ok"] is True and r["unloaded"] is None  # 설치돼 있지 않은 이전 모델은 내릴 것이 없다(404)
     ask(api)
     assert fake.requests[-1]["model"] == "exaone3.5:7.8b"
+
+
+# ---------------------------------------------------------------- Phase 5: 대화 저장
+
+
+def pick(path):
+    return lambda mode: str(path) if path is not None else None
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_저장한_대화를_새_앱에서_열면_같은_메시지_수와_순서와_role로_복원되고_문맥으로_이어진다(fake, api_for, tmp_path, name):
+    api = api_for(name)
+    for q in ("첫째 질문 😊", "둘째\n질문", "셋째"):
+        ask(api, q)
+    saved = api._session.export_messages()
+    assert len(saved) == 6
+    path = tmp_path / "대화 저장" / "한글 파일.json"
+    path.parent.mkdir()
+    r = api.save_chat(str(path))
+    assert r == {"ok": True, "path": str(path), "count": 6}
+    # 새 앱(새 세션)에서 연다
+    fake.requests.clear()
+    fresh = api_for(name)
+    assert fresh._session.turn_count == 0
+    r = fresh.load_chat(str(path))
+    assert r["ok"] is True and r["count"] == 6 and r["messages"] == saved
+    assert [m["role"] for m in r["messages"]] == ["user", "assistant"] * 3
+    assert fresh._session.export_messages() == saved
+    ask(fresh, "넷째 질문")
+    contents = [m["content"] for m in fake.requests[-1]["messages"]]
+    assert contents[1:] == ["첫째 질문 😊", "답", "둘째\n질문", "답", "셋째", "답", "넷째 질문"]  # 복원한 대화가 문맥으로 이어진다
+    assert fresh.info()["model"] == "qwen3:8b"  # 불러와도 현재 모델은 바뀌지 않는다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_복원한_대화가_10턴을_넘어도_요청에는_직전_10턴만_실린다(fake, api_for, tmp_path, name):
+    from local_chat import conversation
+
+    messages = []
+    for i in range(1, 13):
+        messages += [{"role": "user", "content": f"질문{i}"}, {"role": "assistant", "content": f"답{i}"}]
+    path = tmp_path / "long.json"
+    conversation.save_file(path, messages)
+    api = api_for(name)
+    assert api.load_chat(str(path))["count"] == 24
+    ask(api, "질문13")
+    contents = [m["content"] for m in fake.requests[-1]["messages"]]
+    assert len(contents) == 22 and contents[1] == "질문3" and contents[-2] == "답12" and contents[-1] == "질문13"
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_손상된_파일을_열면_거절하고_현재_대화는_그대로다(fake, api_for, tmp_path, name):
+    api = api_for(name)
+    ask(api, "지켜야 할 질문")
+    before = api._session.export_messages()
+    cases = {
+        "깨진JSON.json": b'{"messages": [{"role": "user", "content": "q"}, {"role": "assis',
+        "역할순서.json": json.dumps([{"role": "assistant", "content": "a"}, {"role": "user", "content": "q"}]).encode(),
+        "홀수.json": json.dumps([{"role": "user", "content": "q"}]).encode(),
+        "배열아님.json": b'{"messages": "x"}',
+        "cp949.json": json.dumps({"messages": [{"role": "user", "content": "안녕"}, {"role": "assistant", "content": "반가워"}]}, ensure_ascii=False).encode("cp949"),
+        "빈파일.json": b"",
+    }
+    for file_name, raw in cases.items():
+        path = tmp_path / file_name
+        path.write_bytes(raw)
+        r = api.load_chat(str(path))
+        assert r["ok"] is False and r["reason"] == "error" and r["message"], file_name
+        assert api._session.export_messages() == before, file_name  # 거절돼도 현재 대화는 그대로다
+    r = api.load_chat(str(tmp_path / "없는파일.json"))
+    assert r["ok"] is False and "읽지 못했다" in r["message"]
+    assert api._session.export_messages() == before
+    ask(api, "이어서")  # 계속 쓸 수 있다
+    assert api._session.turn_count == 2
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_답변_중에는_저장도_열기도_거절하고_파일을_건드리지_않는다(fake, api_for, tmp_path, name):
+    from local_chat import conversation
+
+    path = tmp_path / "chat.json"
+    conversation.save_file(path, [{"role": "user", "content": "옛"}, {"role": "assistant", "content": "답"}])
+    before = path.read_bytes()
+    gate = threading.Event()
+
+    def script(h):
+        send_headers(h)
+        send_body(h, [chunk("가")])
+        gate.wait(10)
+        send_body(h, [chunk("나"), done_chunk(2, 1_000_000_000)])
+
+    fake.script = script
+    api = api_for(name)
+    api.send("긴 답변")
+    deadline = time.time() + 5
+    while not api._window.events and time.time() < deadline:
+        time.sleep(0.01)
+    r = api.save_chat(str(path))
+    assert r["ok"] is False and r["reason"] == "busy"
+    assert path.read_bytes() == before  # 저장하지 않았다
+    r = api.load_chat(str(path))
+    assert r["ok"] is False and r["reason"] == "busy"
+    assert api._session.turn_count == 0  # 대화가 바뀌지 않았다
+    gate.set()
+    assert api._session.join(10)
+    assert api.save_chat(str(path))["ok"] is True  # 끝난 뒤에는 된다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_모델을_바꾸는_중에는_저장도_열기도_거절한다(fake, api_for, tmp_path, name):
+    fake.unload_delay = 1.0
+    api = api_for(name)
+    t = threading.Thread(target=lambda: api.set_model("exaone3.5:7.8b"))
+    t.start()
+    assert fake.unload_started.wait(5)
+    path = tmp_path / "chat.json"
+    assert api.save_chat(str(path))["reason"] == "switching"
+    assert api.load_chat(str(path))["reason"] == "switching"
+    assert not path.exists()
+    t.join(10)
+    assert api.save_chat(str(path))["ok"] is True
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_대화상자를_취소하면_아무것도_하지_않는다(fake, api_for, tmp_path, name):
+    api = api_for(name)
+    ask(api, "질문")
+    before = api._session.export_messages()
+    api._pick_path = pick(None)  # 취소
+    assert api.save_chat() == {"ok": False, "reason": "cancelled", "message": "저장을 취소했다"}
+    assert api.load_chat() == {"ok": False, "reason": "cancelled", "message": "열기를 취소했다"}
+    assert api._session.export_messages() == before and list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_경로를_안_주면_대화상자가_고른_경로로_저장하고_연다(fake, api_for, tmp_path, name):
+    api = api_for(name)
+    ask(api, "질문")
+    path = tmp_path / "고른 파일.json"
+    modes = []
+    api._pick_path = lambda mode: (modes.append(mode), str(path))[1]
+    assert api.save_chat()["ok"] is True
+    fresh = api_for(name)
+    fresh._pick_path = api._pick_path
+    r = fresh.load_chat()
+    assert r["ok"] is True and r["count"] == 2 and modes == ["save", "open"]
+
+
+@pytest.mark.parametrize("result,expected", [(None, None), ((), None), ([], None), ("C:/a/chat.json", "C:/a/chat.json"), (("C:/a/chat.json",), "C:/a/chat.json"), (["C:/a/chat.json", "x"], "C:/a/chat.json")])
+def test_파일_대화상자의_반환_형태를_경로_하나나_None으로_정리한다(fake, result, expected):
+    import webview
+
+    class W:
+        calls = []
+
+        def create_file_dialog(self, kind, **kw):
+            W.calls.append((kind, kw))
+            return result
+
+    api = Api(CLIENTS["http"](host=fake.host), "qwen3:8b", dict(OPTIONS))
+    api._window = W()
+    assert api._dialog("save") == expected
+    assert api._dialog("open") == expected
+    (save_kind, save_kw), (open_kind, _) = W.calls
+    assert save_kind == webview.FileDialog.SAVE and open_kind == webview.FileDialog.OPEN
+    assert save_kw["save_filename"] == "chat.json"  # 기본 파일 이름을 제안한다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_빈_대화도_저장하고_열면_현재_대화가_비워진다(fake, api_for, tmp_path, name):
+    api = api_for(name)
+    path = tmp_path / "empty.json"
+    assert api.save_chat(str(path)) == {"ok": True, "path": str(path), "count": 0}
+    ask(api, "질문")
+    r = api.load_chat(str(path))
+    assert r["ok"] is True and r["count"] == 0 and r["messages"] == [] and api._session.turn_count == 0
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_저장_실패는_예외가_아니라_오류_응답이고_기존_파일은_그대로다(fake, api_for, tmp_path, name):
+    api = api_for(name)
+    ask(api, "질문")
+    r = api.save_chat(str(tmp_path / "없는폴더" / "chat.json"))
+    assert r["ok"] is False and r["reason"] == "error" and "저장하지 못했다" in r["message"]
+    path = tmp_path / "chat.json"
+    assert api.save_chat(str(path))["ok"] is True
+    before = path.read_bytes()
+    api._session._turns.append(("짝 없는 서로게이트 \ud83d", "답"))  # UTF-8로 쓸 수 없는 문자가 대화에 들어간 경우
+    r = api.save_chat(str(path))
+    assert r["ok"] is False and "UTF-8" in r["message"]
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_중단돼_받은_데까지만_남은_턴도_저장하고_복원한다(fake, api_for, tmp_path, name):
+    gate = threading.Event()
+
+    def script(h):
+        send_headers(h)
+        send_body(h, [chunk("받은 부분")])
+        gate.wait(10)
+
+    fake.script = script
+    api = api_for(name)
+    api.send("긴 답변")
+    deadline = time.time() + 5
+    while not api._window.events and time.time() < deadline:
+        time.sleep(0.01)
+    api.stop()
+    gate.set()
+    path = tmp_path / "stopped.json"
+    assert api.save_chat(str(path))["count"] == 2
+    fresh = api_for(name)
+    assert fresh.load_chat(str(path))["messages"] == [{"role": "user", "content": "긴 답변"}, {"role": "assistant", "content": "받은 부분"}]
