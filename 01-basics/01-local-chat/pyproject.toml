@@ -1,0 +1,12 @@
+[project]
+name = "local-chat"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "ipykernel>=7.4.0",
+    "jupyter>=1.1.1",
+    "langchain-ollama>=1.1.0",
+    "ollama>=0.6.3",
+    "pywebview>=6.2.1",
+]

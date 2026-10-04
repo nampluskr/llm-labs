@@ -4,6 +4,18 @@
 
 ## 계획된 작업
 
+### Phase 1 — 세 호출 방식 노트북 (2026-10-04) — 완료
+
+- **무엇을:** `notebooks/`에 `01-ollama.ipynb`(공식 클라이언트), `02-langchain-ollama.ipynb`(`ChatOllama`), `03-http-api.ipynb`(`httpx`로 `/api/chat` NDJSON)를 만들었다. 세 노트북 모두 같은 모델(`qwen3:8b`)·옵션(`num_ctx` 4096, `temperature` 0.7)·`think=False`·메시지를 쓰고, 비스트리밍 → 스트리밍 + tok/s → 멀티턴 순서다.
+- **결과:** 노트북 3개(실행 결과 출력 포함). 이 연습의 uv 환경도 만들었다(`pyproject.toml`, `uv.lock`, `.python-version` 3.13; `ollama`·`langchain-ollama`·`httpx`·`pywebview`·`jupyter`·`ipykernel`).
+- **검증:** `jupyter nbconvert --execute`로 세 노트북을 처음부터 끝까지 실행했다. 세 노트북 모두 오류 셀 0개, 미실행 셀 0개, 종료 코드 0. 스트리밍 tok/s는 44.9 / 44.7 / 44.3(`eval_count / eval_duration`, Ollama가 잰 값).
+- **특이사항:**
+  - `langchain-ollama`의 `stream()`은 통계가 든 청크(`done=True`) 뒤에 내용 없는 청크를 하나 더 낸다. 그래서 "마지막 청크"가 아니라 `done`이 참인 청크에서 통계를 읽는다.
+  - 청크 수(76·69·71)가 생성 토큰 수(78~90)보다 작다. 청크 하나가 항상 토큰 하나는 아니다. 노트북은 청크를 그대로 출력한다.
+  - 03의 "첫 토큰까지" 2.09s는 모델 적재 시간이 섞인 값이다(01·02는 0.05s, 이미 적재된 상태).
+  - 노트북은 `THINK=False`로 고정했다. 사고 과정 표시는 아직 미정이다(Phase 3 전에 정한다).
+- **적대적 검증:** 아직 하지 않았다. 필수 통과 Phase가 아니다(Phase 2·3).
+
 ## 계획 외 개선
 
 ### 00 분리 후 잔여 문구 정리 (2026-10-04)
@@ -14,3 +26,10 @@
   - 연습 플랜 4절(`docs/labs/01-basics/01-local-chat.md`)의 "00-01 설치 후 `ollama ps`로 실측한다"를 "00-01은 `qwen3:4b`만 실측, `qwen3:8b`는 02-01에서 실측"으로 고치고, 사본 `docs/refs/01-local-chat.md`를 다시 복사해 맞췄다.
 - **결과:** BRIEF·DECISIONS·PLAN은 바꾸지 않았다(이미 분리 후 상태).
 - **검증:** `git diff`로 변경이 위 세 곳뿐임을 확인했고, README의 Phase 번호가 PLAN과 일치하며 `docs/refs/` 사본이 원본과 같음을 확인했다.
+
+### 착수 후속 — ROADMAP 갱신·환경 구성 (2026-10-04)
+
+- **요청:** "모두 승인" — INIT 보고에서 승인을 구한 ROADMAP 갱신과 Phase 1 진행.
+- **조치:** `docs/ROADMAP.md` 진행 현황에서 01-01을 "진행 중 / v0.1"로 갱신했다. Phase 1 착수 때 이 연습의 uv 환경(`pyproject.toml`)을 만들었다. PLAN에는 환경 구성 task가 없지만 Phase 1 실행에 필요해, 00-02와 같은 방식(`uv init --bare` → 3.13 고정 → `uv add`)으로 했다. 프로젝트명은 숫자로 시작할 수 없어 `local-chat`이다.
+- **결과:** ROADMAP 반영, 환경 생성. `<think>` 표시·Phase 2 콘솔 UTF-8 처리는 따로 정해진 바 없어 문서를 바꾸지 않았다.
+- **검증:** `git diff`와 `uv run python --version`(3.13.14)으로 확인했다.
