@@ -17,7 +17,7 @@ def request_version(client):
 def parse_version(response):
     data = response.json()
     version = data.get("version") if isinstance(data, dict) else None
-    if not isinstance(version, str) or not version:
+    if not isinstance(version, str) or not version.strip():
         raise ValueError(f"/api/version 응답에 올바른 version이 없다: {data!r}")
     return version
 
@@ -47,13 +47,20 @@ def get_loaded(client):
     ]
 
 
+def one_line(text):
+    # 응답 문자열의 줄바꿈·연속 공백을 한 칸으로 줄여 항목이 한 줄로 남게 한다
+    return " ".join(str(text).split())
+
+
 def gb(size):
-    return "크기 알 수 없음" if size is None else f"{size / 1e9:.1f}GB"
+    try:
+        return f"{size / 1e9:.1f}GB"
+    except (TypeError, ValueError, OverflowError):  # None, 숫자가 아닌 값, 너무 큰 정수
+        return "크기 알 수 없음"
 
 
 def describe(error):
-    # 오류 응답 본문에 줄바꿈이 있어도 화면이 항목당 한 줄이 되게 공백을 한 칸으로 줄인다
-    return " ".join(f"{type(error).__name__}: {error}".split())
+    return one_line(f"{type(error).__name__}: {error}")
 
 
 def check(name, ok, detail, data=None):
@@ -74,7 +81,7 @@ def check_connection_and_version(client):
         version = parse_version(response)
     except Exception as e:  # JSON이 아니거나 version이 없거나 형식이 틀린 응답
         return [connection, check("버전", False, describe(e))]
-    return [connection, check("버전", True, version, version)]
+    return [connection, check("버전", True, one_line(version), version)]
 
 
 def check_models(client):
@@ -115,9 +122,9 @@ def render_text(checks):
     for c in checks:
         lines.append(f"[{'통과' if c['ok'] else '실패'}] {c['name']}: {c['detail']}")
         if c["name"] == "받은 모델":
-            lines += [f"  {m['name']}  {gb(m['size'])}" for m in c["data"] or []]
+            lines += [f"  {one_line(m['name'])}  {gb(m['size'])}" for m in c["data"] or []]
         elif c["name"] == "적재된 모델":
-            lines += [f"  {m['name']}  {gb(m['size'])}  {m['processor']}" for m in c["data"] or []]
+            lines += [f"  {one_line(m['name'])}  {gb(m['size'])}  {m['processor']}" for m in c["data"] or []]
     s = summarize(checks)
     if s["ok"]:
         lines.append(f"결과: 통과 ({s['passed']}/{s['total']})")

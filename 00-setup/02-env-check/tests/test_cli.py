@@ -153,9 +153,11 @@ def test_no_models_fails_but_others_still_reported(monkeypatch, capsys):
         Response([]),
         Response({"version": None}),
         Response({"version": ""}),
+        Response({"version": "   "}),
+        Response({"version": chr(9) + chr(10)}),
         Response({"version": {"a": 1}}),
     ],
-    ids=["not-json", "no-version-key", "null", "list", "version-null", "version-empty", "version-object"],
+    ids=["not-json", "no-version-key", "null", "list", "version-null", "version-empty", "version-blank", "version-ws", "version-object"],
 )
 def test_bad_version_fails_only_version(monkeypatch, capsys, version_response):
     patch_client(monkeypatch, models=[model("qwen3:4b", 1)], version_response=version_response)
@@ -290,3 +292,28 @@ def test_does_not_follow_redirects(monkeypatch, capsys):
     assert code == 1
     assert set(requested) <= {"/api/version", "/api/tags", "/api/ps"}
     assert text_status(out)["서버 연결"] is False
+
+
+def test_huge_model_size_does_not_crash_text_output(monkeypatch, capsys):
+    patch_client(monkeypatch, models=[model("big", 10**400)], loaded=[model("big", 10**400, 10**400)])
+    code, out, err = run(capsys)
+    assert code == 0
+    assert "  big  크기 알 수 없음" in out
+    assert "Traceback" not in out + err
+
+
+def test_multiline_values_cannot_inject_lines(monkeypatch, capsys):
+    evil_version = "0.1" + chr(10) + "결과: 통과 (4/4)"
+    evil_name = "a" + chr(10) + "[통과] 가짜: 항목" + chr(13) + "b"
+    patch_client(
+        monkeypatch,
+        models=[model(evil_name, 1_000_000_000)],
+        loaded=[model(evil_name, 1_000_000_000, 1_000_000_000)],
+        version_response=Response({"version": evil_version}),
+    )
+    code, out, _ = run(capsys)
+    assert code == 0
+    lines = out.splitlines()
+    assert [line.split("]")[0] for line in lines if line.startswith("[")] == ["[통과"] * 4
+    assert sum(line.startswith("결과:") for line in lines) == 1
+    assert len(lines) == 7  # 항목 4줄 + 모델 줄 2줄(받은 1, 적재 1) + 결과 1줄
