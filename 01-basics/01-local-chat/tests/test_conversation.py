@@ -188,3 +188,24 @@ def test_같은_경로에_다시_저장하면_교체된다(tmp_path):
     save_file(path, [u("1"), a("1")])
     save_file(path, SAMPLE)
     assert load_file(path) == SAMPLE and os.listdir(tmp_path) == ["chat.json"]
+
+
+def test_JSON_이스케이프로_든_짝_없는_서로게이트는_거절한다():
+    """받아들이면 이후 모든 요청이 UTF-8 인코딩 오류로 실패하고, 그 대화는 저장도 못 한다."""
+    for escaped in ('"\\ud800"', '"앞\\udc00뒤"', '"\\ud83d"'):
+        text = '[{"role": "user", "content": %s}, {"role": "assistant", "content": "a"}]' % escaped
+        with pytest.raises(ConversationError, match="UTF-8"):
+            parse(text)
+        text = '[{"role": "user", "content": "q"}, {"role": "assistant", "content": %s}]' % escaped
+        with pytest.raises(ConversationError, match="UTF-8"):
+            parse(text)
+    # 짝이 맞는 서로게이트 쌍(이모지)은 정상이다
+    assert parse('[{"role": "user", "content": "\\ud83d\\ude0a"}, {"role": "assistant", "content": "a"}]')[0]["content"] == "😊"
+
+
+def test_format이_다르면_거절하고_없거나_같으면_받는다():
+    assert parse(json.dumps({"format": "local-chat", "messages": SAMPLE[:2]})) == SAMPLE[:2]
+    assert parse(json.dumps({"messages": SAMPLE[:2]})) == SAMPLE[:2]
+    for fmt in ("other-app", "", None, 1, ["local-chat"]):
+        with pytest.raises(ConversationError, match="format"):
+            parse(json.dumps({"format": fmt, "messages": SAMPLE[:2]}))

@@ -32,6 +32,8 @@ def parse(text: str) -> list[dict]:
     except (ValueError, RecursionError) as e:  # 깨진 JSON, 너무 깊게 중첩된 JSON
         raise ConversationError(f"JSON이 아니거나 손상된 파일이다 ({type(e).__name__})") from None
     if isinstance(data, dict):
+        if "format" in data and data["format"] != FORMAT:
+            raise ConversationError(f"이 앱의 대화 파일이 아니다: format={data['format']!r}")
         version = data.get("version")
         if version is not None and (isinstance(version, bool) or version != VERSION):
             raise ConversationError(f"지원하지 않는 형식 버전이다: {version!r}")
@@ -56,6 +58,10 @@ def parse(text: str) -> list[dict]:
             raise ConversationError(f"{i + 1}번째 메시지는 {expected}여야 한다(질문과 답이 번갈아 와야 한다)")
         if not isinstance(content, str) or not content.strip():
             raise ConversationError(f"{i + 1}번째 메시지의 content가 비어 있거나 문자열이 아니다")
+        try:
+            content.encode("utf-8")
+        except UnicodeEncodeError:  # JSON 이스케이프(\\ud800)로 든 짝 없는 서로게이트. 받아들이면 이후 모든 요청이 인코딩 오류로 실패한다
+            raise ConversationError(f"{i + 1}번째 메시지에 UTF-8로 표현할 수 없는 문자(짝 없는 서로게이트)가 있다") from None
         messages.append({"role": role, "content": content})  # 알려진 필드만 옮긴다
     if len(messages) % 2:
         raise ConversationError("마지막 질문에 답이 없다(메시지 수가 홀수다)")

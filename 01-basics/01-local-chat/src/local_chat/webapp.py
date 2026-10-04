@@ -132,14 +132,21 @@ class Api:
             return {"ok": False, "reason": "switching", "message": "모델을 바꾸는 중에는 저장하거나 열 수 없다"}
         return None
 
-    def save_chat(self, path=None):
-        """지금까지 끝난 대화를 JSON 파일로 저장한다. path가 없으면 대화상자로 묻는다. 답변 중에는 거절한다."""
+    def save_chat(self):
+        """대화상자로 경로를 물어 지금까지 끝난 대화를 JSON 파일로 저장한다. 답변 중에는 거절한다."""
         gate = self._file_gate()
         if gate:
             return gate
-        path = path or self._pick_path("save")
+        path = self._pick_path("save")
         if not path:
             return {"ok": False, "reason": "cancelled", "message": "저장을 취소했다"}
+        return self._save_to(path)
+
+    def _save_to(self, path):
+        """경로를 알고 있을 때의 저장. 시험에서 대화상자 없이 쓴다. 밑줄로 시작해 JS에는 공개하지 않는다(임의 경로를 받지 않는다)."""
+        gate = self._file_gate()
+        if gate:
+            return gate
         messages = self._session.export_messages()  # 대화상자를 여는 사이에 바뀐 것까지 담도록 경로를 받은 뒤에 읽는다
         if messages is None:
             return {"ok": False, "reason": "busy", "message": "답변 중에는 저장할 수 없다"}
@@ -149,14 +156,25 @@ class Api:
             return {"ok": False, "reason": "error", "message": str(e)}
         return {"ok": True, "path": str(path), "count": len(messages)}
 
-    def load_chat(self, path=None):
-        """JSON 파일의 대화로 현재 대화를 통째로 바꾼다. 파일이 올바르지 않으면 현재 대화는 그대로다. 답변 중에는 거절한다."""
+    def load_chat(self):
+        """대화상자로 경로를 물어 JSON 파일의 대화로 현재 대화를 통째로 바꾼다. 파일이 올바르지 않으면 현재 대화는 그대로다. 답변 중에는 거절한다."""
         gate = self._file_gate()
         if gate:
             return gate
-        path = path or self._pick_path("open")
+        path = self._pick_path("open")
         if not path:
             return {"ok": False, "reason": "cancelled", "message": "열기를 취소했다"}
+        return self._load_from(path)
+
+    def history(self):
+        """지금 서버가 가진 대화(끝난 턴의 질문·답). 열기 응답이 화면에 도착하지 못했을 때 화면을 맞추는 데 쓴다. 답변 중이면 None."""
+        return {"messages": self._session.export_messages()}
+
+    def _load_from(self, path):
+        """경로를 알고 있을 때의 열기. 시험에서 대화상자 없이 쓴다. 밑줄로 시작해 JS에는 공개하지 않는다."""
+        gate = self._file_gate()
+        if gate:
+            return gate
         try:
             messages = conversation.load_file(path)  # 먼저 검증한다. 실패하면 아래 복원까지 가지 않는다
         except conversation.ConversationError as e:

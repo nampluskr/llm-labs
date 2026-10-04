@@ -170,7 +170,9 @@ class ChatSession:
         """기록을 확정하고 busy를 푼다(self._lock을 쥔 채 부른다). 턴당 한 번만 일어난다."""
         turn.finalized = True
         answer = "".join(turn.reply)
-        if outcome == "done" or (outcome == "stopped" and answer):
+        # 답이 비어 있으면(사고 과정만 오고 끝남, 공백뿐인 답) 그 턴은 남기지 않는다. 빈 assistant 메시지는 문맥으로
+        # 보낼 수 없고, 저장하면 다시 열 수 없는 파일이 된다(열기는 빈 content를 거절한다). 실패한 턴과 같게 다룬다
+        if outcome in ("done", "stopped") and answer.strip():
             self._turns.append((turn.text, answer))  # 사용자가 본 대로 남긴다(중단이면 본 데까지)
         self._busy = False
 

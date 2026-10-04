@@ -381,13 +381,13 @@ def test_저장한_대화를_새_앱에서_열면_같은_메시지_수와_순서
     assert len(saved) == 6
     path = tmp_path / "대화 저장" / "한글 파일.json"
     path.parent.mkdir()
-    r = api.save_chat(str(path))
+    r = api._save_to(str(path))
     assert r == {"ok": True, "path": str(path), "count": 6}
     # 새 앱(새 세션)에서 연다
     fake.requests.clear()
     fresh = api_for(name)
     assert fresh._session.turn_count == 0
-    r = fresh.load_chat(str(path))
+    r = fresh._load_from(str(path))
     assert r["ok"] is True and r["count"] == 6 and r["messages"] == saved
     assert [m["role"] for m in r["messages"]] == ["user", "assistant"] * 3
     assert fresh._session.export_messages() == saved
@@ -407,7 +407,7 @@ def test_복원한_대화가_10턴을_넘어도_요청에는_직전_10턴만_실
     path = tmp_path / "long.json"
     conversation.save_file(path, messages)
     api = api_for(name)
-    assert api.load_chat(str(path))["count"] == 24
+    assert api._load_from(str(path))["count"] == 24
     ask(api, "질문13")
     contents = [m["content"] for m in fake.requests[-1]["messages"]]
     assert len(contents) == 22 and contents[1] == "질문3" and contents[-2] == "답12" and contents[-1] == "질문13"
@@ -429,10 +429,10 @@ def test_손상된_파일을_열면_거절하고_현재_대화는_그대로다(f
     for file_name, raw in cases.items():
         path = tmp_path / file_name
         path.write_bytes(raw)
-        r = api.load_chat(str(path))
+        r = api._load_from(str(path))
         assert r["ok"] is False and r["reason"] == "error" and r["message"], file_name
         assert api._session.export_messages() == before, file_name  # 거절돼도 현재 대화는 그대로다
-    r = api.load_chat(str(tmp_path / "없는파일.json"))
+    r = api._load_from(str(tmp_path / "없는파일.json"))
     assert r["ok"] is False and "읽지 못했다" in r["message"]
     assert api._session.export_messages() == before
     ask(api, "이어서")  # 계속 쓸 수 있다
@@ -460,15 +460,15 @@ def test_답변_중에는_저장도_열기도_거절하고_파일을_건드리�
     deadline = time.time() + 5
     while not api._window.events and time.time() < deadline:
         time.sleep(0.01)
-    r = api.save_chat(str(path))
+    r = api._save_to(str(path))
     assert r["ok"] is False and r["reason"] == "busy"
     assert path.read_bytes() == before  # 저장하지 않았다
-    r = api.load_chat(str(path))
+    r = api._load_from(str(path))
     assert r["ok"] is False and r["reason"] == "busy"
     assert api._session.turn_count == 0  # 대화가 바뀌지 않았다
     gate.set()
     assert api._session.join(10)
-    assert api.save_chat(str(path))["ok"] is True  # 끝난 뒤에는 된다
+    assert api._save_to(str(path))["ok"] is True  # 끝난 뒤에는 된다
 
 
 @pytest.mark.parametrize("name", list(CLIENTS))
@@ -479,11 +479,11 @@ def test_모델을_바꾸는_중에는_저장도_열기도_거절한다(fake, ap
     t.start()
     assert fake.unload_started.wait(5)
     path = tmp_path / "chat.json"
-    assert api.save_chat(str(path))["reason"] == "switching"
-    assert api.load_chat(str(path))["reason"] == "switching"
+    assert api._save_to(str(path))["reason"] == "switching"
+    assert api._load_from(str(path))["reason"] == "switching"
     assert not path.exists()
     t.join(10)
-    assert api.save_chat(str(path))["ok"] is True
+    assert api._save_to(str(path))["ok"] is True
 
 
 @pytest.mark.parametrize("name", list(CLIENTS))
@@ -535,9 +535,9 @@ def test_파일_대화상자의_반환_형태를_경로_하나나_None으로_정
 def test_빈_대화도_저장하고_열면_현재_대화가_비워진다(fake, api_for, tmp_path, name):
     api = api_for(name)
     path = tmp_path / "empty.json"
-    assert api.save_chat(str(path)) == {"ok": True, "path": str(path), "count": 0}
+    assert api._save_to(str(path)) == {"ok": True, "path": str(path), "count": 0}
     ask(api, "질문")
-    r = api.load_chat(str(path))
+    r = api._load_from(str(path))
     assert r["ok"] is True and r["count"] == 0 and r["messages"] == [] and api._session.turn_count == 0
 
 
@@ -545,13 +545,13 @@ def test_빈_대화도_저장하고_열면_현재_대화가_비워진다(fake, a
 def test_저장_실패는_예외가_아니라_오류_응답이고_기존_파일은_그대로다(fake, api_for, tmp_path, name):
     api = api_for(name)
     ask(api, "질문")
-    r = api.save_chat(str(tmp_path / "없는폴더" / "chat.json"))
+    r = api._save_to(str(tmp_path / "없는폴더" / "chat.json"))
     assert r["ok"] is False and r["reason"] == "error" and "저장하지 못했다" in r["message"]
     path = tmp_path / "chat.json"
-    assert api.save_chat(str(path))["ok"] is True
+    assert api._save_to(str(path))["ok"] is True
     before = path.read_bytes()
     api._session._turns.append(("짝 없는 서로게이트 \ud83d", "답"))  # UTF-8로 쓸 수 없는 문자가 대화에 들어간 경우
-    r = api.save_chat(str(path))
+    r = api._save_to(str(path))
     assert r["ok"] is False and "UTF-8" in r["message"]
     assert path.read_bytes() == before
 
@@ -574,6 +574,140 @@ def test_중단돼_받은_데까지만_남은_턴도_저장하고_복원한다(f
     api.stop()
     gate.set()
     path = tmp_path / "stopped.json"
-    assert api.save_chat(str(path))["count"] == 2
+    assert api._save_to(str(path))["count"] == 2
     fresh = api_for(name)
-    assert fresh.load_chat(str(path))["messages"] == [{"role": "user", "content": "긴 답변"}, {"role": "assistant", "content": "받은 부분"}]
+    assert fresh._load_from(str(path))["messages"] == [{"role": "user", "content": "긴 답변"}, {"role": "assistant", "content": "받은 부분"}]
+
+
+def test_JS에_공개되는_저장_열기는_경로를_받지_않는다():
+    """공개 메서드(밑줄 없음)는 pywebview가 JS에 노출한다. 임의 경로를 받는 메서드는 밑줄로 숨긴다."""
+    import inspect
+
+    assert list(inspect.signature(Api.save_chat).parameters) == ["self"]
+    assert list(inspect.signature(Api.load_chat).parameters) == ["self"]
+    public = {n for n in dir(Api) if not n.startswith("_") and callable(getattr(Api, n))}
+    assert {"save_chat", "load_chat", "history"} <= public
+    assert not {"_save_to", "_load_from"} & public
+
+
+def test_파일_대화상자_호출_형식이_실제_pywebview_시그니처와_파일_형식_문법에_맞는다():
+    """create_file_dialog는 시험에서 실행하지 못하므로, 우리가 넘기는 인자가 시그니처와 pywebview의 file_types 문법에 맞는지 확인한다."""
+    import inspect
+
+    import webview
+    from webview.util import parse_file_type
+
+    sig = inspect.signature(webview.Window.create_file_dialog)
+    sig.bind(None, webview.FileDialog.SAVE, save_filename="chat.json", file_types=("JSON (*.json)",))
+    sig.bind(None, webview.FileDialog.OPEN, file_types=("JSON (*.json)",))
+    assert parse_file_type("JSON (*.json)") == ("JSON", "*.json")
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_사고_과정만_오고_끝난_턴은_기록하지_않아_저장한_파일을_다시_열_수_있다(fake, api_for, tmp_path, name):
+    fake.script = lambda h: send_lines(h, [chunk("", thinking="생각만 하고"), done_chunk(1, 1_000_000_000)])
+    api = api_for(name)
+    ask(api, "질문")  # 화면에는 정상 종료로 보인다
+    assert api.history() == {"messages": []}
+    path = tmp_path / "chat.json"
+    assert api._save_to(str(path))["count"] == 0
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    ask(api, "다음 질문")
+    assert api._save_to(str(path))["count"] == 2
+    assert api_for(name)._load_from(str(path))["count"] == 2  # 저장한 파일은 항상 다시 열 수 있다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_짝_없는_서로게이트가_든_파일은_거절하고_이후_대화가_오염되지_않는다(fake, api_for, tmp_path, name):
+    api = api_for(name)
+    ask(api, "지켜야 할 질문")
+    before = api.history()
+    path = tmp_path / "surrogate.json"
+    path.write_bytes('[{"role": "user", "content": "\\ud800 안녕"}, {"role": "assistant", "content": "a"}]'.encode("utf-8"))
+    r = api._load_from(str(path))
+    assert r["ok"] is False and "UTF-8" in r["message"]
+    assert api.history() == before
+    ask(api, "이어서")  # 질문이 인코딩 오류로 실패하지 않는다
+    assert fake.requests[-1]["messages"][-1]["content"] == "이어서"
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_history는_서버가_가진_대화를_돌려주고_답변_중에는_None이다(fake, api_for, name):
+    gate = threading.Event()
+
+    def script(h):
+        send_headers(h)
+        send_body(h, [chunk("가")])
+        gate.wait(10)
+        send_body(h, [chunk("나"), done_chunk(2, 1_000_000_000)])
+
+    api = api_for(name)
+    ask(api, "첫 질문")
+    assert api.history() == {"messages": [{"role": "user", "content": "첫 질문"}, {"role": "assistant", "content": "답"}]}
+    fake.script = script
+    api.send("긴 답변")
+    deadline = time.time() + 5
+    while len(api._window.events) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    assert api.history() == {"messages": None}
+    gate.set()
+    api._session.join(10)
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_파일을_읽는_사이_질문이_시작되면_열기는_거절되고_진행_중인_대화를_바꾸지_않는다(fake, api_for, tmp_path, monkeypatch, name):
+    from local_chat import conversation
+
+    path = tmp_path / "chat.json"
+    conversation.save_file(path, [{"role": "user", "content": "파일의 질문"}, {"role": "assistant", "content": "파일의 답"}])
+    api = api_for(name)
+    reading = threading.Event()
+    proceed = threading.Event()
+    real_load = conversation.load_file
+
+    def slow_load(p):
+        reading.set()
+        proceed.wait(10)
+        return real_load(p)
+
+    monkeypatch.setattr(conversation, "load_file", slow_load)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(api._load_from(str(path))))
+    t.start()
+    assert reading.wait(5)
+    assert api.send("읽는 중에 시작한 질문") == {"ok": True}  # 화면은 잠겨 있지만 Api는 막지 않는다
+    proceed.set()
+    t.join(10)
+    assert out["ok"] is False and out["reason"] == "busy"  # 복원은 진행 중인 대화를 덮지 못한다
+    assert api._session.join(10)
+    assert api.history()["messages"][0] == {"role": "user", "content": "읽는 중에 시작한 질문"}  # 파일의 대화가 섞이지 않았다
+    assert len(api.history()["messages"]) == 2
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_저장하는_사이_질문이_시작돼도_저장한_파일은_그_시점의_대화다(fake, api_for, tmp_path, monkeypatch, name):
+    from local_chat import conversation
+
+    api = api_for(name)
+    ask(api, "저장 전 질문")
+    writing = threading.Event()
+    proceed = threading.Event()
+    real_save = conversation.save_file
+
+    def slow_save(p, messages, model=None):
+        writing.set()
+        proceed.wait(10)
+        return real_save(p, messages, model)
+
+    monkeypatch.setattr(conversation, "save_file", slow_save)
+    path = tmp_path / "chat.json"
+    out = {}
+    t = threading.Thread(target=lambda: out.update(api._save_to(str(path))))
+    t.start()
+    assert writing.wait(5)
+    assert api.send("저장하는 중에 시작한 질문") == {"ok": True}
+    proceed.set()
+    t.join(10)
+    assert out["ok"] is True and out["count"] == 2
+    assert [m["content"] for m in conversation.load_file(path)] == ["저장 전 질문", "답"]  # 진행 중이던 턴은 섞이지 않았다
+    api._session.join(10)

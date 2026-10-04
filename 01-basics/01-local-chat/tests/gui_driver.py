@@ -1,6 +1,6 @@
 """실제 pywebview 창을 띄워 DOM을 조작·관찰한다. 사용: python gui_driver.py <client> <host> <scenario> [entry]
 시나리오: ok(두 질문) · stop(중단 버튼, 취소된 요청의 늦은 이벤트까지 관찰) · many(12번 연속 질문)
-         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · save·load·load_corrupt(대화 저장·열기) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
+         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · save·load·load_corrupt·load_over·load_lost(대화 저장·열기) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
 entry를 주면 build()가 아니라 앱 진입점 local_chat.app_<client>.main(argv)로 창을 띄운다.
 결과를 JSON 한 줄로 stdout에 낸다. pytest(test_gui.py)가 서브프로세스로 돌린다."""
 
@@ -279,6 +279,21 @@ def drive(window, result, scenario):
             time.sleep(0.3)
             result["after"] = json.loads(js(window, "JSON.stringify({model: document.getElementById('model').value, numctx: document.getElementById('numctx').value, info: document.getElementById('info').textContent})"))
             result["ask"] = ask(window, "질문")
+        elif scenario in ("load_over", "load_lost"):
+            wait(window, "document.getElementById('save').disabled === false", 15)
+            bubbles = "JSON.stringify(Array.from(document.querySelectorAll('.msg')).map(m => [m.classList.contains('user') ? 'user' : 'assistant', m.textContent]))"
+            result["asked"] = ask(window, "화면에 있던 질문")  # 사고 과정 블록이 있는 대화가 화면에 있다
+            result["think_blocks_before"] = js(window, "document.querySelectorAll('details.think').length")
+            if scenario == "load_lost":
+                # 서버에서는 열기가 성공하지만 응답이 화면에 도착하지 못한 것처럼 만든다
+                js(window, "window.__load = window.pywebview.api.load_chat; window.pywebview.api.load_chat = async () => { await window.__load(); throw new Error('lost'); }; 0")
+            js(window, "document.getElementById('status').textContent = ''; document.getElementById('open').click(); 0")
+            wait(window, "document.getElementById('status').textContent.length > 0", 15)
+            time.sleep(0.8)
+            result["status"] = js(window, "document.getElementById('status').textContent")
+            result["bubbles"] = json.loads(js(window, bubbles))
+            result["think_blocks_after"] = js(window, "document.querySelectorAll('details.think').length")
+            result["controls"] = json.loads(js(window, "JSON.stringify({send: document.getElementById('send').disabled, open: document.getElementById('open').disabled})"))
         elif scenario in ("save", "load", "load_corrupt"):
             wait(window, "document.getElementById('save').disabled === false", 15)
             bubbles = "JSON.stringify(Array.from(document.querySelectorAll('.msg')).map(m => [m.classList.contains('user') ? 'user' : 'assistant', m.textContent]))"

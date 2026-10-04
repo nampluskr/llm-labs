@@ -702,3 +702,47 @@ def test_답변_중에는_복원을_거절하고_대화는_그대로다():
     gate.set()
     session.join(5)
     assert session.export_messages() == [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+
+
+def test_답이_비어_있는_턴은_기록하지_않는다_저장하면_다시_열_수_없는_파일이_되기_때문이다():
+    from local_chat import conversation
+
+    def thinking_only(text):
+        yield Thinking("생각만 하고")
+        yield Done(1, 1_000_000_000)
+
+    def blank(text):
+        yield Token("   \n")
+        yield Done(1, 1_000_000_000)
+
+    for script in (thinking_only, blank):
+        client = ScriptedClient(script)
+        events = []
+        session = ChatSession(client, "m", OPTIONS, events.append, think=True)
+        ask(session, "질문")
+        assert events[-1]["type"] == "done"  # 화면에는 정상 종료로 보인다
+        assert session.turn_count == 0 and session.export_messages() == []  # 그러나 대화 기록에는 남지 않는다
+        # 빈 assistant 메시지가 다음 질문의 문맥에 실리지 않는다
+        ask(session, "다음 질문")
+        assert [m["role"] for m in client.calls[-1]] == ["system", "user"]
+        # 내보낸 대화는 항상 다시 열 수 있다
+        conversation.parse(conversation.dumps(session.export_messages()))
+
+
+def test_공백만_받고_중단해도_그_턴은_기록하지_않는다():
+    gate = threading.Event()
+
+    def blank_then_block(text):
+        yield Token("  ")
+        gate.wait(5)
+        yield Done(1, 1)
+
+    session, events = make(ScriptedClient(blank_then_block))
+    session.send("q")
+    deadline = time.time() + 5
+    while not events and time.time() < deadline:
+        time.sleep(0.005)
+    session.stop()
+    gate.set()
+    session.join(5)
+    assert events[-1] == {"type": "stopped"} and session.turn_count == 0

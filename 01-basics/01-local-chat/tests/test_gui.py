@@ -360,3 +360,34 @@ def test_창에서_손상된_파일을_열면_오류를_보이고_화면의_대�
     assert r["controls"] == {"send": False, "save": False, "open": False}
     contents = [m["content"] for m in fake.requests[-1]["messages"]]
     assert contents[1:] == ["지켜야 할 질문", "답", "넷째 질문"]  # 서버 쪽 대화도 그대로다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_이미_대화와_사고_과정_블록이_있는_화면_위에서_열어도_옛_화면을_남기지_않는다(fake, tmp_path, name):
+    from local_chat import conversation
+
+    fake.capabilities = ["completion", "thinking"]
+    fake.script = lambda h: send_lines(h, [chunk("", thinking="생각"), chunk("답"), done_chunk(2, 1_000_000_000)])
+    path = tmp_path / "파일의 대화.json"
+    file_messages = [{"role": "user", "content": "파일의 질문 😊"}, {"role": "assistant", "content": "파일의 답"}]
+    conversation.save_file(path, file_messages)
+    r = run_driver(name, fake.host, "load_over", pick=path)
+    assert "driver_error" not in r, r
+    assert r["think_blocks_before"] == 1  # 열기 전 화면에는 사고 과정 블록이 있었다
+    assert r["bubbles"] == [["user", "파일의 질문 😊"], ["assistant", "파일의 답"]]  # 옛 말풍선이 남지 않고 파일의 대화만 보인다
+    assert r["think_blocks_after"] == 0 and "불러왔습니다" in r["status"]
+    assert r["controls"] == {"send": False, "open": False}
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_열기_응답이_끊겨도_서버가_가진_대화로_화면을_맞춘다(fake, tmp_path, name):
+    from local_chat import conversation
+
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    path = tmp_path / "파일의 대화.json"
+    conversation.save_file(path, [{"role": "user", "content": "파일의 질문"}, {"role": "assistant", "content": "파일의 답"}])
+    r = run_driver(name, fake.host, "load_lost", pick=path)
+    assert "driver_error" not in r, r
+    # 서버에서는 열기가 끝났으므로 화면도 파일의 대화여야 한다(화면에 옛 대화가 남으면 서버와 어긋난다)
+    assert r["bubbles"] == [["user", "파일의 질문"], ["assistant", "파일의 답"]]
+    assert r["controls"] == {"send": False, "open": False}

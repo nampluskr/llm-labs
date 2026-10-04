@@ -313,11 +313,18 @@
     try {
       r = await call();
     } catch (e) {
-      r = { ok: false, message: "처리하지 못했습니다." };
+      r = { ok: false, reason: "bridge", message: "처리하지 못했습니다." };   // 응답이 오지 않았다. 서버에서는 처리됐을 수 있다
     }
     statusEl.textContent = r.ok ? okMessage(r) : (r.message || "처리하지 못했습니다.");
     setLocked(false);
     return r;
+  }
+
+  function renderMessages(messages) {   // 화면의 대화를 messages로 다시 그린다
+    log.textContent = "";
+    current = null;
+    thinkEl = null;
+    for (const m of messages) addMsg(m.role === "user" ? "user" : "assistant", m.content);
   }
 
   saveBtn.addEventListener("click", () => {
@@ -328,11 +335,18 @@
   openBtn.addEventListener("click", async () => {
     if (locked || busy || !bridgeReady()) return;
     const r = await runFile(() => window.pywebview.api.load_chat(), (r) => r.count + "개 메시지를 불러왔습니다: " + baseName(r.path));
-    if (!r.ok) return;   // 실패하면 화면의 대화는 그대로다
-    log.textContent = "";   // 불러온 대화로 화면을 다시 그린다
-    current = null;
-    thinkEl = null;
-    for (const m of r.messages) addMsg(m.role === "user" ? "user" : "assistant", m.content);
+    if (r.ok) {
+      renderMessages(r.messages);   // 불러온 대화로 화면을 다시 그린다
+    } else if (r.reason === "bridge") {
+      // 응답이 오지 않았다. 서버에서 열기가 끝났을 수 있으니 서버가 실제로 가진 대화로 화면을 맞춘다
+      try {
+        const h = await window.pywebview.api.history();
+        if (h.messages) renderMessages(h.messages);
+      } catch (e) {
+        setLocked(true);
+        statusEl.textContent = "서버 상태를 확인하지 못했습니다. 앱을 다시 여세요.";
+      }
+    }   // 그 밖의 실패(파일이 올바르지 않음 등)는 서버 대화가 그대로이므로 화면도 그대로다
   });
 
   async function init() {
