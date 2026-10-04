@@ -64,3 +64,16 @@
   - winpython `_gpu` 환경 사용 — 위 이유로 D-2와 R-10(연습별 환경)에 어긋난다.
   - 연습 환경에 torch(CUDA 빌드)·CUDA Toolkit 설치 — 점검 CLI가 GPU를 직접 쓰지 않으므로 필요 없다. 파이썬 안에서
     모델을 직접 돌리는 연습이 생기면 그 연습의 DECISIONS에서 INTENT와 대조해 정한다.
+
+## D-7. Ollama 호출은 `ollama` 패키지로 하고, 버전만 `httpx`로 한다
+
+- **선택:** 받은 모델 목록(`/api/tags`)과 적재 상태(`/api/ps`)는 공식 `ollama` 패키지(`Client.list`·`Client.ps`)로
+  읽는다. `/api/version`은 패키지에 호출 함수가 없어 `httpx`로 직접 읽는다. 서버 주소는 `http://127.0.0.1:11434`
+  고정이고 옵션으로 바꾸지 않는다.
+- **근거:** 플랜의 기술 스택이 `ollama` 패키지다. 패키지 Client에는 version 호출이 없는 것을 설치된 패키지에서
+  확인했다. `httpx`는 `ollama`가 이미 쓰는 의존성이라 새 패키지를 늘리지 않고, 명시적으로 `pyproject.toml`에 적는다.
+  서버 주소를 바꾸는 옵션은 플랜·BRIEF에 없다.
+- **배제한 대안:**
+  - 세 호출 모두 `httpx`로 직접 호출 — 플랜의 기술 스택(`ollama` 패키지)과 다르다.
+  - 패키지 내부(`Client._client`)로 version 호출 — 비공개 속성이라 패키지 갱신에 깨질 수 있다.
+  - `--host` 옵션 추가 — 범위 밖이다(BRIEF 4절).
