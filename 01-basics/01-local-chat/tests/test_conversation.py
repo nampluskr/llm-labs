@@ -130,7 +130,7 @@ def test_UTF8이_아닌_파일은_거절한다(tmp_path):
 def test_없는_파일_폴더_권한이_없는_경우는_ConversationError(tmp_path):
     with pytest.raises(ConversationError, match="읽지 못했다"):
         load_file(tmp_path / "없음.json")
-    with pytest.raises(ConversationError, match="읽지 못했다"):
+    with pytest.raises(ConversationError, match="일반 파일이 아니다"):
         load_file(tmp_path)  # 폴더
 
 
@@ -326,3 +326,60 @@ def test_쓰기_중_실패와_임시_파일_정리_실패에도_ConversationErro
     for leftover in tmp_path.iterdir():
         if leftover.name != "chat.json":
             leftover.unlink()  # 정리 실패 시험이 남긴 임시 파일
+
+
+@pytest.mark.parametrize("version", [None, 1.0, "1", True, False, 2, 0, [1], {"v": 1}])
+def test_version이_있으면_정수_1이어야_한다(version):
+    """없는 것은 허용하지만, 명시했다면 null·1.0·문자열·bool은 거절한다(현재 대화를 조용히 지우지 않게)."""
+    with pytest.raises(ConversationError, match="형식 버전"):
+        parse(json.dumps({"version": version, "messages": []}))
+    assert parse(json.dumps({"version": 1, "messages": []})) == []
+    assert parse(json.dumps({"messages": []})) == []
+
+
+def test_응답하지_않는_곳을_읽으면_시간_제한으로_거절한다(tmp_path, monkeypatch):
+    """바이트 한도는 읽는 양만 제한한다. 읽다가 끝없이 기다리면 파일 작업 중 표시가 풀리지 않아 질문·전환이 막힌다."""
+    import time
+
+    monkeypatch.setattr(conversation, "READ_TIMEOUT", 0.5)
+    release = []
+    real = conversation._read_bytes
+
+    def hang(path):
+        while not release:
+            time.sleep(0.05)
+        return real(path)
+
+    monkeypatch.setattr(conversation, "_read_bytes", hang)
+    path = tmp_path / "chat.json"
+    save_file(path, SAMPLE)
+    t0 = time.perf_counter()
+    with pytest.raises(ConversationError, match="너무 오래 걸린다"):
+        load_file(path)
+    assert time.perf_counter() - t0 < 3
+    release.append(1)  # 백그라운드에 남은 읽기 스레드를 풀어 준다
+
+
+@pytest.mark.skipif(os.name != "nt", reason="이름 있는 파이프는 Windows 시험이다")
+def test_연결만_받고_아무것도_보내지_않는_이름_있는_파이프는_읽지_않고_거절한다():
+    """파이프·장치 경로를 읽으면 서버가 아무것도 보내지 않는 한 영원히 기다린다. 일반 파일이 아니면 읽지 않는다."""
+    import ctypes
+    import threading
+    import time
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateNamedPipeW.restype = wintypes.HANDLE
+    kernel32.CreateNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+    name = r"\\.\pipe\local-chat-test-" + str(os.getpid())
+    handle = kernel32.CreateNamedPipeW(name, 0x3, 0x0, 1, 4096, 4096, 0, None)  # PIPE_ACCESS_DUPLEX, 바이트·대기 모드
+    assert handle and handle != ctypes.c_void_p(-1).value
+    server = threading.Thread(target=lambda: (kernel32.ConnectNamedPipe(handle, None), time.sleep(8)), daemon=True)
+    server.start()
+    try:
+        t0 = time.perf_counter()
+        with pytest.raises(ConversationError):
+            load_file(name)
+        assert time.perf_counter() - t0 < 5  # 영원히 기다리지 않고 바로 거절한다
+    finally:
+        kernel32.CloseHandle(handle)

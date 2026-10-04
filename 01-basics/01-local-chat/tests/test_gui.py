@@ -506,7 +506,7 @@ def test_창은_상한만큼_많은_메시지를_불러와도_멈추지_않고_�
     from local_chat import conversation
 
     fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
-    pairs = 4000  # 메시지 8000개
+    pairs = conversation.MAX_MESSAGES // 2  # 상한만큼(메시지 20000개)
     messages = []
     for i in range(pairs):
         messages += [{"role": "user", "content": f"질문{i}"}, {"role": "assistant", "content": f"답{i}"}]
@@ -517,3 +517,20 @@ def test_창은_상한만큼_많은_메시지를_불러와도_멈추지_않고_�
     assert r["done"] is True and r["count"] == 2 * pairs and r["alive"] == 2
     assert r["first_last"] == ["질문0", f"답{pairs - 1}"]
     assert r["seconds"] < 30, r["seconds"]  # 말풍선마다 배치를 다시 계산하면 이 크기에서 크게 느려진다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_열기_요청이_서버에_늦게_도착해도_뒤늦게_서버의_대화로_화면을_맞춘다(fake, tmp_path, name):
+    """응답이 먼저 끊겨 복구 시점에는 서버가 놀고 있었더라도, 그 뒤에 열기가 처리되면 화면이 서버의 대화를 따라간다."""
+    from local_chat import conversation
+
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    path = tmp_path / "파일의 대화.json"
+    conversation.save_file(path, [{"role": "user", "content": "파일의 질문"}, {"role": "assistant", "content": "파일의 답"}])
+    fake.requests.clear()
+    r = run_driver(name, fake.host, "load_delayed", pick=path)
+    assert "driver_error" not in r, r
+    assert r["early"] == [["user", "화면에 있던 질문"], ["assistant", "답"]]  # 복구 직후에는 아직 옛 대화(열기가 아직 서버에 도착하지 않았다)
+    assert r["caught_up"] is True and r["bubbles"] == [["user", "파일의 질문"], ["assistant", "파일의 답"]]  # 뒤늦게 맞췄다
+    assert r["controls"] == {"send": False, "open": False}
+    assert [m["content"] for m in fake.requests[-1]["messages"]][1:] == ["파일의 질문", "파일의 답", "넷째 질문"]

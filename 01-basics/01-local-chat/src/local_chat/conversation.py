@@ -11,13 +11,16 @@ messages 배열만 있는 파일(최상위가 배열)도 읽는다.
 
 import json
 import os
+import stat
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 
 FORMAT = "local-chat"
 VERSION = 1
 MAX_BYTES = 10 * 1024 * 1024  # 이보다 큰 파일은 읽지 않는다
+READ_TIMEOUT = 15.0  # 파일을 읽는 데 걸릴 수 있는 시간(초). 이 안에 못 읽으면 거절한다(응답하지 않는 네트워크 드라이브 등)
 MAX_MESSAGES = 20000  # 이보다 많은 메시지는 읽지도 저장하지도 않는다(화면이 그 많은 말풍선을 그리다 멈추지 않게)
 ROLES = ("user", "assistant")  # 이 순서로 번갈아 온다
 
@@ -56,9 +59,10 @@ def parse(text: str) -> list[dict]:
     if isinstance(data, dict):
         if "format" in data and data["format"] != FORMAT:
             raise ConversationError(f"이 앱의 대화 파일이 아니다: format={data['format']!r}")
-        version = data.get("version")
-        if version is not None and (isinstance(version, bool) or version != VERSION):
-            raise ConversationError(f"지원하지 않는 형식 버전이다: {version!r}")
+        if "version" in data:  # 없는 것은 허용하지만, 있다면 정수 1이어야 한다(null·1.0·"1"·true는 거절)
+            version = data["version"]
+            if type(version) is not int or version != VERSION:
+                raise ConversationError(f"지원하지 않는 형식 버전이다: {version!r}")
         if "messages" not in data:
             raise ConversationError("messages가 없다")
         raw = data["messages"]
@@ -132,13 +136,38 @@ def save_file(path: str | os.PathLike, messages: list[dict], model: str | None =
                 pass
 
 
-def load_file(path: str | os.PathLike) -> list[dict]:
-    """파일을 읽어 검증한 messages를 돌려준다. 읽을 수 없거나 올바르지 않으면 ConversationError."""
+def _read_bytes(path: str | os.PathLike) -> bytes:
+    """일반 파일의 내용을 읽는다. 폴더·장치·파이프는 읽지 않는다(읽다가 끝없이 기다릴 수 있다)."""
     try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            raise ConversationError("일반 파일이 아니다(폴더·장치·파이프는 읽지 않는다)")
         with open(path, "rb") as f:
-            raw = f.read(MAX_BYTES + 1)
+            return f.read(MAX_BYTES + 1)
     except OSError as e:
         raise ConversationError(f"파일을 읽지 못했다: {e.strerror or e}") from None
+
+
+def load_file(path: str | os.PathLike) -> list[dict]:
+    """파일을 읽어 검증한 messages를 돌려준다. 읽을 수 없거나 올바르지 않으면 ConversationError.
+    읽기에는 시간 제한이 있다(바이트 한도는 읽는 양만 제한하고 기다리는 시간은 제한하지 않는다)."""
+    box: dict = {}
+
+    def work():
+        try:
+            box["raw"] = _read_bytes(path)
+        except ConversationError as e:
+            box["error"] = e
+        except Exception as e:  # 예상하지 못한 읽기 실패도 거절로 통일한다
+            box["error"] = ConversationError(f"파일을 읽지 못했다: {e!r}")
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(READ_TIMEOUT)
+    if worker.is_alive():  # 응답하지 않는 곳을 읽는 중이다. 기다리지 않고 거절한다(작업 스레드는 백그라운드에 남는다)
+        raise ConversationError(f"파일을 읽는 데 너무 오래 걸린다({READ_TIMEOUT:g}초 넘음)")
+    if "error" in box:
+        raise box["error"]
+    raw = box["raw"]
     if len(raw) > MAX_BYTES:
         raise ConversationError(f"파일이 너무 크다(최대 {MAX_BYTES // (1024 * 1024)}MB)")
     try:

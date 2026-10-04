@@ -14,3 +14,5 @@ workflow/ (project-workflow 3311e8f의 llm-labs 사본) 기준으로 초기화�
 - 완료 조건은 그 연습의 `PLAN.md`에 적힌 것으로 판정한다. 스스로 정하지 않는다
 - 다른 연습 폴더를 고치지 않는다. 공통 코드가 필요하면 복사해 온다
 - 되돌릴 수 없는 작업(배포·삭제·외부 상태 변경)은 먼저 묻는다
+- 모델을 바꾸는 코드는 이전 모델을 바로 내린다(`keep_alive: 0`). 두 모델이 VRAM에 겹치면 11GB를 넘길 수 있다 (01-01-local-chat v0.1 D-6)
+- 사고 과정을 지원하는 모델(`/api/show`의 `capabilities`에 `thinking`)은 `think=True`로 사고 과정을 분리해 받는다. `think=False`를 믿지 않는다(`qwen3:4b`는 무시하고 추론이 답에 섞인다). 지원하지 않는 모델에는 `think=True`를 보내지 않는다(400) (01-01-local-chat v0.1 D-10)

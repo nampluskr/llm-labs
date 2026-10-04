@@ -1,6 +1,6 @@
 """실제 pywebview 창을 띄워 DOM을 조작·관찰한다. 사용: python gui_driver.py <client> <host> <scenario> [entry]
 시나리오: ok(두 질문) · stop(중단 버튼, 취소된 요청의 늦은 이벤트까지 관찰) · many(12번 연속 질문)
-         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · save·load·load_corrupt·load_over·load_lost·load_early_lost·dialog_save·dialog_open·dialog_cancel(대화 저장·열기. dialog_*는 실제 네이티브 파일 대화상자) · desync·load_never_settles·load_many · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
+         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · save·load·load_corrupt·load_over·load_lost·load_early_lost·dialog_save·dialog_open·dialog_cancel(대화 저장·열기. dialog_*는 실제 네이티브 파일 대화상자) · desync·load_never_settles·load_many·load_delayed · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
 entry를 주면 build()가 아니라 앱 진입점 local_chat.app_<client>.main(argv)로 창을 띄운다.
 결과를 JSON 한 줄로 stdout에 낸다. pytest(test_gui.py)가 서브프로세스로 돌린다."""
 
@@ -350,7 +350,7 @@ def drive(window, result, scenario):
             time.sleep(0.3)
             result["after"] = json.loads(js(window, "JSON.stringify({model: document.getElementById('model').value, numctx: document.getElementById('numctx').value, info: document.getElementById('info').textContent})"))
             result["ask"] = ask(window, "질문")
-        elif scenario in ("desync", "load_never_settles", "load_many"):
+        elif scenario in ("desync", "load_never_settles", "load_many", "load_delayed"):
             wait(window, "document.getElementById('save').disabled === false", 15)
             bubbles = "JSON.stringify(Array.from(document.querySelectorAll('.msg')).map(m => [m.classList.contains('user') ? 'user' : 'assistant', m.textContent]))"
             pick = os.environ["GUI_DRIVER_PICK"]
@@ -366,6 +366,19 @@ def drive(window, result, scenario):
                 result["input"] = js(window, "document.getElementById('input').value")
                 result["controls"] = json.loads(js(window, "JSON.stringify({send: document.getElementById('send').disabled, open: document.getElementById('open').disabled})"))
                 result["resent"] = ask(window, "어긋난 채 보낸 질문")  # 같은 질문을 다시 보낸다
+            elif scenario == "load_delayed":
+                ask(window, "화면에 있던 질문")
+                # 열기 요청이 서버에 늦게(2.5초 뒤) 도착하는데 브리지 약속은 바로 실패하는 것처럼 만든다.
+                # 복구 시점에는 서버가 놀고 있으므로 화면은 옛 대화로 풀리고, 그 뒤 열기가 처리된다
+                js(window, "window.__load = window.pywebview.api.load_chat; window.pywebview.api.load_chat = () => { setTimeout(() => window.__load(), 2500); return Promise.reject(new Error('lost')); }; 0")
+                js(window, "document.getElementById('status').textContent = ''; document.getElementById('open').click(); 0")
+                time.sleep(1.8)
+                result["early"] = json.loads(js(window, bubbles))  # 복구 직후: 아직 옛 대화
+                result["early_status"] = js(window, "document.getElementById('status').textContent")
+                result["caught_up"] = wait(window, "document.getElementById('status').textContent.includes('뒤늦게 처리된 열기')", 30)
+                result["bubbles"] = json.loads(js(window, bubbles))
+                result["controls"] = json.loads(js(window, "JSON.stringify({send: document.getElementById('send').disabled, open: document.getElementById('open').disabled})"))
+                result["next"] = ask(window, "넷째 질문")
             elif scenario == "load_never_settles":
                 ask(window, "화면에 있던 질문")
                 # 서버의 열기는 끝나는데 브리지 응답이 영영 오지 않는 것처럼 만든다(약속이 끝나지 않는다)

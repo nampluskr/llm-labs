@@ -369,6 +369,25 @@
     return null;
   }
 
+  function lateResync() {
+    // 열기 요청이 서버에 늦게 도착하는 경우를 대비한다. 복구 시점에는 서버가 놀고 있었지만 그 뒤에 열기가 처리될 수 있다.
+    // 잠시 뒤 서버의 대화 버전이 화면이 아는 것과 다르면 서버의 대화로 다시 맞춘다. 그 뒤에는 질문 시의 버전 확인이 막는다
+    for (const delay of [2000, 5000, 10000]) {
+      setTimeout(async () => {
+        if (locked || busy || !bridgeReady()) return;
+        try {
+          const h = await window.pywebview.api.history();
+          if (h.file_busy || !h.messages || h.version === knownVersion) return;
+          renderMessages(h.messages);
+          knownVersion = h.version;
+          statusEl.textContent = "뒤늦게 처리된 열기를 반영해 서버의 대화로 화면을 맞췄습니다.";
+        } catch (e) {
+          // 확인하지 못해도 다음 질문 때 버전 확인이 어긋남을 알려 준다
+        }
+      }, delay);
+    }
+  }
+
   function lockForUnknownState() {
     setLocked(true);   // 풀지 않는다: 화면과 다른 대화로 질문이 나가지 않게
     statusEl.textContent = "서버 상태를 확인하지 못했습니다. 앱을 다시 여세요.";
@@ -413,6 +432,7 @@
       knownVersion = h.version;
       statusEl.textContent = "응답이 오지 않아 서버의 대화로 화면을 맞췄습니다.";
       setLocked(false);
+      lateResync();
     }   // 그 밖의 실패(파일이 올바르지 않음 등)는 서버 대화가 그대로이므로 화면도 그대로다
   });
 
