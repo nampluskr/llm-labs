@@ -14,7 +14,7 @@ llm-labs의 첫 연습이며, 여기서 만든 Ollama 호출·스트리밍 코�
 
 ## 폴더 구조
 
-v0.1을 마감할 때의 예정 구조다. `*` 표시는 아직 정하지 않은 이름·배치로, Phase 3·4 착수 때 정한다.
+v0.1을 마감할 때의 예정 구조다. `*` 표시는 아직 정하지 않은 이름·배치로, Phase 2·3 착수 때 정한다.
 
 ```
 01-local-chat/
@@ -26,11 +26,11 @@ v0.1을 마감할 때의 예정 구조다. `*` 표시는 아직 정하지 않은
 │   ├── ADVERSARIAL-REVIEW.md
 │   ├── reviews/             반대 벤더 검토 기록
 │   └── history/v0.1/        마감 때 current 복사, 불변
-├── notebooks/               Phase 2 — 세 호출 방식 공부용 (D-9)
+├── notebooks/               Phase 1 — 세 호출 방식 공부용 (D-9)
 │   ├── 01-ollama.ipynb
 │   ├── 02-langchain-ollama.ipynb
 │   └── 03-http-api.ipynb
-├── src/ *                   Phase 3~6
+├── src/ *                   Phase 2~5
 │   ├── clients/ *           호출 층 3개, 같은 인터페이스 — 이후 연습이 복사해 가는 공통 코드 (D-1·D-3)
 │   │   ├── ollama_client.py *
 │   │   ├── langchain_client.py *
@@ -40,8 +40,8 @@ v0.1을 마감할 때의 예정 구조다. `*` 표시는 아직 정하지 않은
 └── tests/ *                 첫 필요 시점에
 ```
 
-INIT 전인 지금은 `BRIEF.md`·`DECISIONS.md`·`PLAN.md`·`README.md`만 있다. 버전 문서는 INIT 때
-`docs/current/`로 옮겨진다.
+현재 `docs/current/`에 `BRIEF.md`·`DECISIONS.md`·`PLAN.md`·`PROGRESS.md`가 있고, 연습 플랜 사본은 `docs/refs/`에 있다.
+구현은 Phase 1(노트북)부터 시작하며, 위 구조는 진행하면서 채워진다.
 
 ## 설치
 
