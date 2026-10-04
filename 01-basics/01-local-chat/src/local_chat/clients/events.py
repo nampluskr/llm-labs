@@ -52,6 +52,7 @@ Event = Token | Thinking | Done | Error
 
 class ChatClient(Protocol):
     name: str
+    host: str  # 모델 능력 조회(capabilities.supports_thinking)에 쓴다
 
     def stream(self, messages: list[Message], *, model: str, options: dict, think: bool = False) -> Iterator[Event]: ...
 

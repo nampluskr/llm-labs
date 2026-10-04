@@ -165,3 +165,26 @@ def test_창은_사고_과정을_펼쳐_보여_주다가_답이_시작되면_접
     assert final["bold"] == 0
     assert r["reopened"] is True  # 접힌 사고 과정을 다시 펼 수 있다
     assert "사고 과정 표시" in r["info"]
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_사고_과정만_오고_답이_없이_끝나도_블록을_펼친_채_둔다(fake, name):
+    fake.capabilities = ["completion", "thinking"]
+    fake.script = lambda h: send_lines(h, [chunk("", thinking="생각만"), done_chunk(1, 1_000_000_000)], delay=0.2)
+    r = run_driver(name, fake.host, "think")
+    assert "driver_error" not in r, r
+    keys = [tuple(k) for k, _, _ in r["seen"]]
+    assert keys[-1] == (True, True, "생각 과정", False), keys  # 제목은 바뀌지만 답이 없으니 접지 않는다
+    assert r["final"]["think"] == "생각만" and r["final"]["answer"] == ""
+    assert r["final"]["status"] == "1토큰 · 1.0 tok/s"
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_사고_중에_오류가_나도_사고_과정과_오류를_함께_보인다(fake, name):
+    fake.capabilities = ["completion", "thinking"]
+    fake.script = lambda h: send_lines(h, [chunk("", thinking="생각 중"), {"error": "out of memory"}], delay=0.2)
+    r = run_driver(name, fake.host, "think")
+    assert "driver_error" not in r, r
+    final = r["final"]
+    assert final["think"] == "생각 중" and "out of memory" in final["answer"]
+    assert final["status"] == "오류(other)"
