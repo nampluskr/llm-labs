@@ -82,7 +82,8 @@ class FakeOllama:
                     owner.get_script(self)
                     return
                 if self.path == "/api/tags" and owner.tags is not None:
-                    send_lines(self, [{"models": [{"name": n, "model": n} for n in owner.tags]}])
+                    items = [n if (n is None or isinstance(n, dict)) else {"name": n, "model": n} for n in owner.tags]  # dict·None은 그대로(잘못된 항목 시험)
+                    send_lines(self, [{"models": items}])
                 else:
                     send_lines(self, [{"error": "not found"}], status=404)
 

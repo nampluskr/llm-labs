@@ -32,8 +32,10 @@ def fetch_json(method: str, url: str, body: dict | None = None, timeout: float =
                     if len(data) > MAX_BODY:
                         raise ValueError("응답이 너무 크다")
             box["value"] = json.loads(bytes(data))
-        except Exception as e:  # 호출한 쪽으로 넘긴다
+        except (httpx.HTTPError, ValueError) as e:  # 호출한 쪽이 아는 실패는 그대로 넘긴다
             box["error"] = e
+        except Exception as e:  # 그 밖의 읽기 실패(예: 너무 깊게 중첩된 JSON의 RecursionError)도 같은 실패로 통일한다
+            box["error"] = ValueError(f"응답을 읽지 못했다: {e!r}")
 
     worker = threading.Thread(target=work, daemon=True)
     worker.start()

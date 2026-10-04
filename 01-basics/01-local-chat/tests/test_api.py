@@ -207,7 +207,8 @@ def test_중단한_뒤_바로_전환해도_이전_요청이_끝난_다음에_이
 
 
 @pytest.mark.parametrize("name", list(CLIENTS))
-def test_이전_요청이_끝나지_않아도_기다리는_시간만_기다리고_전환한다(fake, api_for, name):
+def test_이전_요청이_끝나지_않았으면_내리지도_전환하지도_않고_끝나면_다시_할_수_있다(fake, api_for, name):
+    """끝났는지 모르는 채로 내리면 그 요청이 뒤늦게 이전 모델을 다시 올릴 수 있다. 그러면 두 모델이 겹친다."""
     gate = threading.Event()
 
     def script(h):
@@ -225,8 +226,26 @@ def test_이전_요청이_끝나지_않아도_기다리는_시간만_기다리�
     api.stop()
     t0 = time.perf_counter()
     r = api.set_model("exaone3.5:7.8b")
-    assert r["ok"] is True and 0.3 <= time.perf_counter() - t0 < 3  # 영원히 기다리지 않는다
-    gate.set()
+    assert r["ok"] is False and r["reason"] == "previous_request_pending" and "다시 시도" in r["message"]
+    assert 0.3 <= time.perf_counter() - t0 < 3  # 영원히 기다리지 않는다
+    assert fake.unloads == []  # 내리지 않았다
+    assert api.info()["model"] == "qwen3:8b" and api.info()["think"] is True and api._switching is False
+    gate.set()  # 이전 요청이 끝난다
+    assert api._session.wait_workers(5)
+    r = api.set_model("exaone3.5:7.8b")
+    assert r["ok"] is True and r["unloaded"] is True and len(fake.unloads) == 1
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_내리기_응답을_읽지_못해도_전환을_되돌리고_새_모델_질문을_보내지_않는다(fake, api_for, name):
+    """예: 너무 깊게 중첩된 JSON은 json.loads가 RecursionError를 낸다. 어떤 예외도 복구를 우회하면 안 된다."""
+    fake.unload_script = lambda h: send_lines(h, [b"[" * 5000 + b"]" * 5000 + chr(10).encode()])
+    api = api_for(name)
+    r = api.set_model("exaone3.5:7.8b")
+    assert r["ok"] is False and r["reason"] == "unload_failed"
+    assert api.info()["model"] == "qwen3:8b" and api._switching is False
+    ask(api)
+    assert fake.requests[-1]["model"] == "qwen3:8b"
 
 
 @pytest.mark.parametrize("name", list(CLIENTS))

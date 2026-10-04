@@ -1,7 +1,7 @@
 import socket
 import time
 
-from fake_ollama import send_headers
+from fake_ollama import send_headers, send_lines
 from local_chat.models import FAILED, NOT_INSTALLED, UNLOADED, list_models, unload_model
 
 
@@ -99,3 +99,22 @@ def test_헤더를_조금씩_흘리는_응답도_전체_시간_안에_포기한�
     t0 = time.perf_counter()
     assert unload_model(fake.host, "a", timeout=1.0) == FAILED
     assert time.perf_counter() - t0 < 3
+
+
+def test_tags에_잘못된_항목이_섞여도_정상_모델은_모두_보인다(fake):
+    fake.tags = ["A", {}, None, {"name": 5}, {"name": ""}, "B"]
+    fake.capabilities_by_model = {"A": ["completion"], "B": ["completion", "thinking"]}
+    assert [m["name"] for m in list_models(fake.host)] == ["A", "B"]
+
+
+def test_models가_리스트가_아니면_빈_목록(fake):
+    fake.get_script = lambda h: send_lines(h, [{"models": "oops"}])
+    assert list_models(fake.host) == []
+
+
+def test_너무_깊게_중첩된_JSON도_예외_없이_실패로_처리한다(fake):
+    fake.unload_script = lambda h: send_lines(h, [b"[" * 5000 + b"]" * 5000 + chr(10).encode()])
+    assert unload_model(fake.host, "m") == FAILED
+    fake.show_script = lambda h: send_lines(h, [b"[" * 5000 + b"]" * 5000 + chr(10).encode()])
+    fake.tags = ["a"]
+    assert list_models(fake.host) == [{"name": "a", "chat": None, "thinking": False}]

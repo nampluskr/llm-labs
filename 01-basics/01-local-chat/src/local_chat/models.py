@@ -21,7 +21,11 @@ def list_models(host: str, timeout: float = 8.0) -> list[dict]:
     deadline = time.monotonic() + timeout
     try:
         tags = fetch_json("GET", f"{host.rstrip('/')}/api/tags", timeout=min(5.0, timeout))
-        names = [m["name"] for m in tags["models"]]
+        entries = tags["models"]
+        if not isinstance(entries, list):
+            return []
+        # 이름이 없는 잘못된 항목은 건너뛰고 나머지는 보인다
+        names = [m["name"] for m in entries if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]]
     except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
         return []
     models = []

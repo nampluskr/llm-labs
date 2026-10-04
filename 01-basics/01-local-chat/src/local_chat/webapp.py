@@ -26,7 +26,7 @@ class Api:
         self._config_lock = threading.Lock()  # 모델 전환·옵션 변경을 한 번에 하나씩
         self._state_lock = threading.Lock()  # 전환 표시와 질문 시작을 서로 배타적으로 만든다(짧게만 쥔다)
         self._switching = False  # 모델 전환 중(이전 모델 내리기 포함)에는 질문을 받지 않는다
-        self._worker_wait = 2.0  # 전환할 때 중단된 이전 요청의 작업 스레드가 끝나기를 기다리는 시간(초)
+        self._worker_wait = 3.0  # 전환할 때 중단된 이전 요청의 작업 스레드가 끝나기를 기다리는 시간(초)
         # 설치된 모델 전체(/api/tags). 현재 모델이 목록에 없으면(미설치이거나 목록을 못 받음) 맨 앞에 둔다
         self._catalog = list_models(client.host)
         entry = next((m for m in self._catalog if m["name"] == model), None)
@@ -82,10 +82,16 @@ class Api:
                     return {**result, "message": "답변 중에는 바꿀 수 없다"}
                 self._switching = True  # 내리기가 끝날 때까지 질문을 받지 않는다
             try:
-                # 중단된 이전 요청이 아직 돌고 있으면 잠깐 기다린다. 내린 뒤에 그 요청이 모델을 다시 올리지 않게 한다
-                self._session.wait_workers(self._worker_wait)
+                # 중단된 이전 요청이 아직 돌고 있으면 잠깐 기다린다. 내린 뒤에 그 요청이 모델을 다시 올리지 않게 한다.
+                # 끝나지 않았다면 그 요청이 언제 모델을 다시 올릴지 알 수 없으므로 내리지 않고 전환도 하지 않는다
+                if not self._session.wait_workers(self._worker_wait):
+                    self._session.configure(model=previous, think=previous_think)
+                    return {"ok": False, "reason": "previous_request_pending", "message": "이전 답변 요청이 아직 끝나지 않아 바꾸지 않았다. 잠시 뒤 다시 시도하세요"}
                 # 이전 모델을 바로 내려 두 모델이 VRAM에 겹치지 않게 한다(D-6)
-                outcome = unload_model(self._client.host, previous)
+                try:
+                    outcome = unload_model(self._client.host, previous)
+                except Exception:  # 내리기 결과를 알 수 없으면 실패로 본다
+                    outcome = FAILED
                 if outcome == FAILED:
                     # 이전 모델이 남아 있을 수 있다. 새 모델을 올리면 겹치므로 전환을 되돌린다
                     self._session.configure(model=previous, think=previous_think)

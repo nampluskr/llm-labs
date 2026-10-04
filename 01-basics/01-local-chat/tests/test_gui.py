@@ -266,3 +266,16 @@ def test_창은_전환_응답이_끊겨도_서버가_실제로_쓰는_모델로_
     assert r["after"]["model"] == "exaone3.5:7.8b" and "exaone3.5:7.8b" in r["after"]["info"] and "사고 과정 없음" in r["after"]["info"]
     assert r["after"]["send"] is False
     assert fake.requests[-1]["model"] == "exaone3.5:7.8b" and r["ask"]["status"] == "1토큰 · 1.0 tok/s"
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_전환_응답과_상태_조회가_모두_실패하면_잠가_두고_질문을_보내지_않는다(fake, name):
+    fake.tags = ["qwen3:8b", "exaone3.5:7.8b"]
+    fake.capabilities_by_model = {"qwen3:8b": ["completion", "thinking"], "exaone3.5:7.8b": ["completion"]}
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    r = run_driver(name, fake.host, "switch_blind")
+    assert "driver_error" not in r, r
+    # 서버가 실제로 쓰는 모델을 알 수 없으므로 화면과 다른 모델로 질문이 나가지 않게 잠가 둔다
+    assert "서버 상태를 확인하지 못했습니다" in r["after"]["status"]
+    assert r["after"]["send"] is True and r["after"]["model"] is True and r["after"]["numctx"] is True
+    assert r["bubbles"] == 0 and fake.requests == []  # 잠긴 사이 보낸 질문은 말풍선도 요청도 만들지 않았다

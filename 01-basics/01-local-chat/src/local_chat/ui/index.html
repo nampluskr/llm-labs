@@ -247,7 +247,9 @@
       try {
         renderInfo(await window.pywebview.api.info());
       } catch (e) {
-        renderInfo(shown);
+        // 서버가 실제로 쓰는 값을 알 수 없다. 화면과 다른 모델·옵션으로 질문이 나가지 않게 잠가 둔다
+        statusEl.textContent = "서버 상태를 확인하지 못했습니다. 앱을 다시 여세요.";
+        return;   // locked를 풀지 않는다
       }
       statusEl.textContent = r.message || "적용하지 못했습니다.";
     }
