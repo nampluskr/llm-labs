@@ -33,3 +33,10 @@
 - **조치:** `docs/ROADMAP.md` 진행 현황에서 01-01을 "진행 중 / v0.1"로 갱신했다. Phase 1 착수 때 이 연습의 uv 환경(`pyproject.toml`)을 만들었다. PLAN에는 환경 구성 task가 없지만 Phase 1 실행에 필요해, 00-02와 같은 방식(`uv init --bare` → 3.13 고정 → `uv add`)으로 했다. 프로젝트명은 숫자로 시작할 수 없어 `local-chat`이다.
 - **결과:** ROADMAP 반영, 환경 생성. `<think>` 표시·Phase 2 콘솔 UTF-8 처리는 따로 정해진 바 없어 문서를 바꾸지 않았다.
 - **검증:** `git diff`와 `uv run python --version`(3.13.14)으로 확인했다.
+
+### Phase 1 적대적 검증 (2026-10-04)
+
+- **요청:** "phase-1 도 적대적 검증 진행" (PLAN상 Phase 1은 필수 통과 Phase가 아니라 선택 검증).
+- **조치:** 세션 내 리뷰어 → Codex `gpt-6.1-sol` 순서로 돌렸다. 기록은 `docs/reviews/A1.md`. 리뷰어의 Minor 2건(청크·토큰 설명 문구, 첫 토큰 시간에 적재 시간 포함 안내)은 세 노트북의 설명 셀만 고쳤다(코드·저장된 출력은 그대로).
+- **결과:** Codex는 Critical·Major·Minor 없음(1/3회, 약 71초). 리뷰어는 Critical·Major 없음, Minor 4건 중 2건 수정·2건은 근거와 함께 유지. `pywebview` 선취(R5)는 사용자 결정 대기.
+- **검증:** 수정은 마크다운 셀뿐이라 실행 결과에 영향이 없다. `git diff`로 세 노트북의 변경이 설명 셀 4곳뿐임을 확인했다.
