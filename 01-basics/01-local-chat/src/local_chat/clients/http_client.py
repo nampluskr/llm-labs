@@ -4,18 +4,19 @@ import json
 
 import httpx
 
-from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done, make_timeout
+from .events import CONNECTION, OTHER, Error, Message, Thinking, Token, classify, make_done, make_timeout, thinking_text
 
 
 class HttpClient:
     name = "http"
 
     def __init__(self, host: str = "http://localhost:11434", read_timeout: float = 300.0):
+        self.host = host
         self._host = host.rstrip("/")
         self._timeout = make_timeout(read_timeout)
 
-    def stream(self, messages: list[Message], *, model: str, options: dict):
-        body = {"model": model, "messages": messages, "stream": True, "think": False, "options": options}
+    def stream(self, messages: list[Message], *, model: str, options: dict, think: bool = False):
+        body = {"model": model, "messages": messages, "stream": True, "think": think, "options": options}
         try:
             with httpx.stream("POST", f"{self._host}/api/chat", json=body, timeout=self._timeout) as r:
                 if r.status_code >= 400:
@@ -30,7 +31,11 @@ class HttpClient:
                     if "error" in d:
                         yield Error(classify(None, str(d["error"])), str(d["error"]))
                         return
-                    piece = d.get("message", {}).get("content")
+                    message = d.get("message", {})
+                    thought = thinking_text(message.get("thinking"))
+                    if thought:
+                        yield Thinking(thought)
+                    piece = message.get("content")
                     if piece is not None and not isinstance(piece, str):
                         raise ValueError(f"message.content가 문자열이 아니다: {piece!r}")
                     if piece:

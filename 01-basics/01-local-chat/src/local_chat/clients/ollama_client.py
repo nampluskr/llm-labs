@@ -3,20 +3,24 @@
 import httpx
 import ollama
 
-from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done, make_timeout
+from .events import CONNECTION, OTHER, Error, Message, Thinking, Token, classify, make_done, make_timeout, thinking_text
 
 
 class OllamaClient:
     name = "ollama"
 
     def __init__(self, host: str = "http://localhost:11434", read_timeout: float = 300.0):
+        self.host = host
         self._client = ollama.Client(host=host, timeout=make_timeout(read_timeout))
 
-    def stream(self, messages: list[Message], *, model: str, options: dict):
+    def stream(self, messages: list[Message], *, model: str, options: dict, think: bool = False):
         stream = None
         try:
-            stream = self._client.chat(model=model, messages=messages, options=options, think=False, stream=True)
+            stream = self._client.chat(model=model, messages=messages, options=options, think=think, stream=True)
             for chunk in stream:
+                thought = thinking_text(chunk.message.thinking)
+                if thought:
+                    yield Thinking(thought)
                 piece = chunk.message.content
                 if piece:
                     yield Token(piece)

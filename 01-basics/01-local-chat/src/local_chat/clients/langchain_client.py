@@ -9,7 +9,7 @@ import ollama
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
-from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done, make_timeout
+from .events import CONNECTION, OTHER, Error, Message, Thinking, Token, classify, make_done, make_timeout, thinking_text
 
 _ROLES = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
 
@@ -18,21 +18,25 @@ class LangchainClient:
     name = "langchain"
 
     def __init__(self, host: str = "http://localhost:11434", read_timeout: float = 300.0):
+        self.host = host
         self._host = host
         self._timeout = make_timeout(read_timeout)
 
-    def stream(self, messages: list[Message], *, model: str, options: dict):
+    def stream(self, messages: list[Message], *, model: str, options: dict, think: bool = False):
         stream = None
         try:
             llm = ChatOllama(
                 model=model,
                 base_url=self._host,
-                reasoning=False,
+                reasoning=think,   # True면 사고 과정이 additional_kwargs["reasoning_content"]로 분리돼 온다
                 client_kwargs={"timeout": self._timeout},
             )
             # options 전체를 그대로 보낸다(다른 두 층과 같게). 생성자 필드는 options를 주면 무시된다
             stream = llm.stream([_ROLES[m["role"]](m["content"]) for m in messages], options=options)
             for chunk in stream:
+                thought = thinking_text(chunk.additional_kwargs.get("reasoning_content"))
+                if thought:
+                    yield Thinking(thought)
                 if chunk.content:
                     yield Token(chunk.content)
                 meta = chunk.response_metadata

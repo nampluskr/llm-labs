@@ -29,6 +29,10 @@
   .msg.user { align-self: flex-end; background: var(--user); }
   .msg.assistant { align-self: flex-start; background: var(--assistant); }
   .msg.error { color: var(--danger); }
+  details.think { margin-bottom: 8px; padding-left: 10px; border-left: 3px solid var(--border);
+                  color: var(--muted); font-size: 13.5px; }
+  details.think summary { cursor: pointer; user-select: none; }
+  details.think .think-body { margin-top: 4px; }
   #status { padding: 4px 16px; color: var(--muted); font-size: 12.5px; min-height: 22px; }
   form { display: flex; gap: 8px; padding: 10px 16px 14px; background: var(--panel); border-top: 1px solid var(--border); }
   textarea { flex: 1; resize: none; height: 54px; padding: 8px 10px; border-radius: 8px; font: inherit;
@@ -55,6 +59,7 @@
   const stopBtn = document.getElementById("stop");
   const statusEl = document.getElementById("status");
   let current = null;   // 지금 채워지는 답변 말풍선
+  let thinkEl = null;   // 그 답변의 사고 과정 블록(사고 과정이 올 때만 만든다)
   let busy = false;
   let ready = false;   // pywebview 브리지가 준비되면 true. 그 전에는 보내지 않는다
   let initStarted = false;
@@ -75,11 +80,39 @@
     return el;
   }
 
+  function ensureThink() {
+    if (!thinkEl) {
+      thinkEl = document.createElement("details");
+      thinkEl.className = "think";
+      thinkEl.open = true;   // 생각하는 동안은 펼쳐 둔다
+      const summary = document.createElement("summary");
+      summary.textContent = "생각 중…";
+      const body = document.createElement("div");
+      body.className = "think-body";
+      thinkEl.append(summary, body);
+      current.insertBefore(thinkEl, current.firstChild);
+    }
+    return thinkEl;
+  }
+
+  function collapseThink() {   // 답이 시작되면 접는다. 사용자가 다시 펼 수 있다
+    if (thinkEl && thinkEl.open && !thinkEl.dataset.collapsed) {
+      thinkEl.open = false;
+      thinkEl.dataset.collapsed = "1";
+      thinkEl.querySelector("summary").textContent = "생각 과정";
+    }
+  }
+
   // 파이썬이 evaluate_js로 부른다
   window.onChatEvent = function (ev) {
     const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
-    if (ev.type === "token") {
-      if (current) current.appendChild(document.createTextNode(ev.text));
+    if (ev.type === "thinking") {
+      if (current) ensureThink().querySelector(".think-body").appendChild(document.createTextNode(ev.text));   // 텍스트 노드: HTML로 해석하지 않는다
+    } else if (ev.type === "token") {
+      if (current) {
+        collapseThink();
+        current.appendChild(document.createTextNode(ev.text));
+      }
     } else if (ev.type === "done") {
       statusEl.textContent = ev.eval_count + "토큰 · " + Number(ev.tok_s).toFixed(1) + " tok/s";
       finish();
@@ -98,7 +131,9 @@
   };
 
   function finish() {
+    if (thinkEl) thinkEl.querySelector("summary").textContent = "생각 과정";   // 답이 없이 끝나도 펼친 채로 둔다
     current = null;
+    thinkEl = null;
     setBusy(false);
     input.focus();
   }
@@ -119,6 +154,7 @@
     const id = ++seq;
     const userEl = addMsg("user", text);
     const bubble = current = addMsg("assistant", "");
+    thinkEl = null;
     input.value = "";
     let r;
     try {
@@ -131,7 +167,7 @@
     // 그 사이 중단됐거나 다음 질문이 시작됐다면 늦게 온 거절이 남의 화면을 지우지 않게 건드리지 않는다.
     if (id !== seq || current !== bubble) return;
     log.removeChild(bubble); log.removeChild(userEl);
-    current = null; input.value = text; setBusy(false);
+    current = null; thinkEl = null; input.value = text; setBusy(false);
     statusEl.textContent = r.reason === "busy" ? "이전 답변을 처리 중입니다." : "보내지 못했습니다. 다시 시도하세요.";
   }
 
@@ -147,7 +183,8 @@
     try {
       const info = await window.pywebview.api.info();
       document.getElementById("title").textContent = "local-chat · " + info.client;
-      document.getElementById("info").textContent = info.model + " · num_ctx " + info.num_ctx + " · temperature " + info.temperature;
+      document.getElementById("info").textContent = info.model + " · num_ctx " + info.num_ctx + " · temperature " + info.temperature +
+        " · " + (info.think ? "사고 과정 표시" : "사고 과정 없음");
       ready = true;
       setBusy(false);   // 보내기 버튼을 연다
     } catch (e) {

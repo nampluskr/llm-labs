@@ -1,4 +1,4 @@
-"""가짜 Ollama 서버: /api/chat 하나만 흉내 낸다. 호출 층·앱 테스트가 같이 쓴다."""
+"""가짜 Ollama 서버: /api/chat과 /api/show를 흉내 낸다. 호출 층·앱 테스트가 같이 쓴다."""
 
 import json
 import threading
@@ -6,8 +6,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-def chunk(text="", done=False, **extra):
+def chunk(text="", done=False, thinking=None, **extra):
     d = {"model": "m", "created_at": "2026-01-01T00:00:00Z", "message": {"role": "assistant", "content": text}, "done": done}
+    if thinking is not None:
+        d["message"]["thinking"] = thinking
     d.update(extra)
     return d
 
@@ -17,10 +19,13 @@ def done_chunk(count=4, duration=2_000_000_000):
 
 
 class FakeOllama:
-    """/api/chat 하나만 흉내 낸다. script(handler)가 응답을 쓴다."""
+    """/api/chat은 script(handler)가 응답을 쓰고, /api/show는 capabilities를 돌려준다.
+    requests에는 /api/chat 요청 본문만 쌓인다."""
 
     def __init__(self):
         self.requests = []
+        self.show_requests = []
+        self.capabilities = ["completion"]  # 사고 과정을 지원하는 모델이면 "thinking"을 더한다
         self.script = None
         self.disconnected = threading.Event()
         owner = self
@@ -31,6 +36,10 @@ class FakeOllama:
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path == "/api/show":
+                    owner.show_requests.append(body)
+                    send_lines(self, [{"model": body.get("model"), "capabilities": owner.capabilities}])
+                    return
                 owner.requests.append(body)
                 owner.script(self)
 

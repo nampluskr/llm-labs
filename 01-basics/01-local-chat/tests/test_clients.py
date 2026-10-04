@@ -249,3 +249,30 @@ def test_content가_문자열이_아니면_세_층_모두_Error(fake):
         events = collect(c)
         assert events[0] == Token("a"), name
         assert isinstance(events[-1], Error) and len(events) == 2, name
+
+
+def test_사고_과정은_세_층이_같은_Thinking_이벤트로_낸다(fake):
+    from local_chat.clients import Thinking
+
+    fake.script = lambda h: send_lines(h, [chunk("", thinking="음"), chunk("", thinking="…"), chunk("답"), chunk("변"), done_chunk(4, 2_000_000_000)])
+    expected = [Thinking("음"), Thinking("…"), Token("답"), Token("변"), Done(4, 2_000_000_000)]
+    for name, c in clients(fake.host):
+        events = list(c.stream(MESSAGES, model="m", options=OPTIONS, think=True))
+        assert events == expected, name
+
+
+def test_think_인자는_요청에_그대로_실린다(fake):
+    fake.script = lambda h: send_lines(h, [chunk("a"), done_chunk()])
+    for name, c in clients(fake.host):
+        for think in (True, False):
+            fake.requests.clear()
+            list(c.stream(MESSAGES, model="m", options=OPTIONS, think=think))
+            assert fake.requests[0]["think"] is think, (name, think)
+
+
+def test_문자열이_아닌_thinking은_세_층_모두_Error(fake):
+    fake.script = lambda h: send_lines(h, [chunk("a"), chunk("", thinking=["x"]), done_chunk()])
+    for name, c in clients(fake.host):
+        events = list(c.stream(MESSAGES, model="m", options=OPTIONS, think=True))
+        assert events[0] == Token("a"), name
+        assert isinstance(events[-1], Error) and len(events) == 2, name

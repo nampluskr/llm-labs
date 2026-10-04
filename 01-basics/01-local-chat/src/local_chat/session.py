@@ -3,11 +3,13 @@
 화면(pywebview)은 emit 콜백으로 이벤트를 받기만 한다. 이 모듈은 화면을 모른다.
 
 emit하는 이벤트(dict):
+  {"type": "thinking", "text": str}                      사고 과정 조각(think가 켜졌을 때만)
   {"type": "token", "text": str}
   {"type": "done", "eval_count": int, "tok_s": float}   정상 종료
   {"type": "stopped"}                                    사용자가 중단
   {"type": "error", "kind": str, "message": str}         실패
 세 종료 이벤트(done·stopped·error) 중 정확히 하나가 마지막에 온다.
+사고 과정은 화면에만 보이고 문맥에는 넣지 않는다(답만 대화 기록에 남는다).
 
 동시성 규칙 (_emit_lock 하나가 이벤트 순서와 기록의 일관성을 지킨다)
   - 답(turn.reply)에는 emit이 성공한 토큰만 남는다(먼저 쌓고 실패하면 되돌린다). 사용자가 못 본 토큰은 문맥에 남지 않는다.
@@ -23,7 +25,7 @@ emit하는 이벤트(dict):
 
 import threading
 
-from .clients import Done, Error, Token
+from .clients import Done, Error, Thinking, Token
 from .defaults import SYSTEM_PROMPT
 
 MAX_TURNS = 10  # 문맥으로 보내는 직전 대화 턴 수. 한 턴 = 질문 하나 + 답 하나
@@ -38,8 +40,8 @@ class _Turn:
 
 
 class ChatSession:
-    def __init__(self, client, model, options, emit, system_prompt=SYSTEM_PROMPT):
-        self._client, self._model, self._options = client, model, options
+    def __init__(self, client, model, options, emit, system_prompt=SYSTEM_PROMPT, think=False):
+        self._client, self._model, self._options, self._think = client, model, options, think
         self._emit_cb = emit
         self._system = system_prompt
         self._turns: list[tuple[str, str]] = []  # 끝난 턴만: (질문, 답)
@@ -127,11 +129,14 @@ class ChatSession:
         final: dict | None = None
         gen = None
         try:
-            gen = self._client.stream(messages, model=self._model, options=self._options)
+            gen = self._client.stream(messages, model=self._model, options=self._options, think=self._think)
             for event in gen:
                 if turn.cancelled.is_set():
                     break
-                if isinstance(event, Token):
+                if isinstance(event, Thinking):
+                    with self._emit_lock:  # 사고 과정은 답(turn.reply)에 넣지 않는다
+                        self._emit(turn, {"type": "thinking", "text": event.text})
+                elif isinstance(event, Token):
                     with self._emit_lock:
                         # 먼저 쌓고 emit이 실패하면 되돌린다. emit 콜백이 같은 스레드에서 stop()을 불러도(RLock)
                         # 방금 전달한 토큰이 답에 들어 있다. 다른 스레드의 stop()은 락 때문에 끼어들 수 없다

@@ -26,6 +26,8 @@ def test_창에서_질문하면_답변이_스트리밍으로_표시된다(fake, 
     r = run_driver(name, fake.host)
     assert "driver_error" not in r, r
     assert r["ready"] and name in r["title"] and "qwen3:8b" in r["info"] and "num_ctx 4096" in r["info"]
+    assert "사고 과정 없음" in r["info"]  # 이 모델은 사고 과정을 지원하지 않는다(capabilities에 thinking 없음)
+    assert fake.requests[0]["think"] is False  # 지원하지 않는 모델에는 think=True를 보내지 않는다
     first = r["first"]
     assert first["final"] == "가나다라" and first["status"] == "4토큰 · 2.0 tok/s", first
     # 몰아서 나온 게 아니라 글자 수가 단계적으로 늘었다
@@ -140,3 +142,26 @@ def test_창은_늦게_도착한_전송_거부가_다음_질문의_화면을_지
     # A의 거부(0.9초)가 B의 답변(약 2초) 도중에 도착했지만 B의 화면은 그대로다
     assert r["mid"]["t"].startswith("B1") and r["mid"]["send"] is True and r["mid"]["stop"] is False and r["mid"]["messages"] == 4, r["mid"]
     assert r["end"] == {"final": "B1B2B3B4", "status": "4토큰 · 4.0 tok/s", "messages": 4}
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_사고_과정을_펼쳐_보여_주다가_답이_시작되면_접는다(fake, name):
+    fake.capabilities = ["completion", "thinking"]
+    fake.script = lambda h: send_lines(
+        h,
+        [chunk("", thinking="음…"), chunk("", thinking="<b>생각</b>"), chunk("답"), chunk("변"), done_chunk(4, 2_000_000_000)],
+        delay=0.3,
+    )
+    r = run_driver(name, fake.host, "think")
+    assert "driver_error" not in r, r
+    assert fake.show_requests and fake.requests[0]["think"] is True  # 지원하는 모델에는 think=True
+    keys = [tuple(k) for k, _, _ in r["seen"]]  # (블록 있음, 펼침, 제목, 답 있음)
+    assert (True, True, "생각 중…", False) in keys, keys  # 생각하는 동안: 펼쳐져 있고 답은 아직 없다
+    assert keys[-1] == (True, False, "생각 과정", True), keys  # 답이 시작되면 접히고 제목이 바뀐다
+    assert keys.index((True, True, "생각 중…", False)) < keys.index(keys[-1])
+    final = r["final"]
+    assert final["think"] == "음…<b>생각</b>"  # 사고 과정은 글자 그대로(HTML로 해석하지 않음)
+    assert final["answer"] == "답변"  # 답에는 사고 과정이 섞이지 않는다
+    assert final["bold"] == 0
+    assert r["reopened"] is True  # 접힌 사고 과정을 다시 펼 수 있다
+    assert "사고 과정 표시" in r["info"]

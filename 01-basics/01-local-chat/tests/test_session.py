@@ -6,7 +6,7 @@ import time
 import pytest
 
 from fake_ollama import chunk, done_chunk, send_lines
-from local_chat.clients import CLIENTS, Done, Error, Token
+from local_chat.clients import CLIENTS, Done, Error, Thinking, Token
 from local_chat.session import MAX_TURNS, ChatSession
 
 OPTIONS = {"num_ctx": 4096, "temperature": 0.7}
@@ -20,10 +20,12 @@ class ScriptedClient:
     def __init__(self, script):
         self.script = script  # 질문 텍스트 -> 이벤트 목록(또는 제너레이터 함수)
         self.calls = []
+        self.thinks = []
         self.closed = threading.Event()
 
-    def stream(self, messages, *, model, options):
+    def stream(self, messages, *, model, options, think=False):
         self.calls.append(messages)
+        self.thinks.append(think)
         try:
             yield from self.script(messages[-1]["content"])
         finally:
@@ -461,3 +463,53 @@ def test_emit_콜백_안에서_중단해도_방금_전달한_토큰은_답에_�
     session.send("다음")
     session.join(5)
     assert client.calls[-1][1:-1] == [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+
+
+def test_사고_과정은_이벤트로_나가지만_문맥에는_넣지_않는다():
+    def thinks(text):
+        yield Thinking("음…")
+        yield Thinking("생각")
+        yield Token("답")
+        yield Done(3, 1_000_000_000)
+
+    client = ScriptedClient(thinks)
+    events = []
+    session = ChatSession(client, "m", OPTIONS, events.append, think=True)
+    ask(session, "q1")
+    assert [e["type"] for e in events] == ["thinking", "thinking", "token", "done"]
+    assert [e["text"] for e in events if e["type"] == "thinking"] == ["음…", "생각"]
+    assert client.thinks == [True]  # 세션이 think를 호출 층에 넘긴다
+    ask(session, "q2")
+    assert client.calls[-1][1:] == [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "답"},  # 사고 과정은 없다
+        {"role": "user", "content": "q2"},
+    ]
+
+
+def test_사고_과정만_받고_중단하면_그_턴은_기록하지_않는다():
+    gate = threading.Event()
+
+    def only_thinking(text):
+        yield Thinking("생각 중")
+        gate.wait(5)
+        yield Token("늦음")
+        yield Done(1, 1)
+
+    session, events = make(ScriptedClient(only_thinking))
+    session.send("q")
+    deadline = time.time() + 5
+    while not events and time.time() < deadline:
+        time.sleep(0.005)
+    session.stop()
+    gate.set()
+    session.join(5)
+    assert [e["type"] for e in events] == ["thinking", "stopped"]
+    assert session.turn_count == 0  # 답이 없으면 남기지 않는다
+
+
+def test_think를_안_주면_꺼진_채_호출한다():
+    client = ScriptedClient(echo)
+    session, _ = make(client)
+    ask(session, "q")
+    assert client.thinks == [False]

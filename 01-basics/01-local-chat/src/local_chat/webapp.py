@@ -6,6 +6,7 @@ from pathlib import Path
 
 import webview
 
+from .capabilities import supports_thinking
 from .defaults import DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_OPTIONS
 from .session import ChatSession
 
@@ -19,7 +20,9 @@ class Api:
     def __init__(self, client, model, options):
         self._client, self._model, self._options = client, model, options
         self._window = None
-        self._session = ChatSession(client, model, options, self._emit)
+        # 사고 과정은 모델이 지원할 때만 켠다. 지원하지 않는 모델에 think=True를 보내면 Ollama가 400을 낸다(D-10)
+        self._think = supports_thinking(client.host, model)
+        self._session = ChatSession(client, model, options, self._emit, think=self._think)
 
     def _emit(self, event: dict) -> None:
         # ensure_ascii=True라 U+2028 같은 문자도 \uXXXX로 나가 JS 문자열로 안전하다
@@ -37,6 +40,7 @@ class Api:
             "model": self._model,
             "num_ctx": self._options.get("num_ctx"),
             "temperature": self._options.get("temperature"),
+            "think": self._think,
         }
 
 
