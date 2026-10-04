@@ -274,15 +274,34 @@ def test_콘솔_프로세스는_한글을_UTF8_바이트로_토큰마다_바로_
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
     )
     arrivals, data = [], b""
-    while True:
-        part = os.read(proc.stdout.fileno(), 4096)
-        if not part:
-            break
-        data += part
-        arrivals.append((time.perf_counter(), data))
-    assert proc.wait(10) == 0, proc.stderr.read().decode("utf-8", "replace")
+
+    def reader():
+        nonlocal data
+        while True:
+            part = os.read(proc.stdout.fileno(), 4096)
+            if not part:
+                return
+            data += part
+            arrivals.append((time.perf_counter(), data))
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    try:
+        t.join(30)  # 프로세스가 멈춰도 테스트가 끝나게 한다
+        assert not t.is_alive(), "콘솔 프로세스가 30초 안에 끝나지 않았다"
+        assert proc.wait(10) == 0, proc.stderr.read().decode("utf-8", "replace")
+    finally:
+        proc.kill()
     text = data.decode("utf-8")  # 바이트가 UTF-8이 아니면 여기서 실패한다
     assert "가나다" in text and text.count("tok/s") == 1
     first = next(t for t, d in arrivals if "가".encode() in d)
     last = next(t for t, d in arrivals if "다".encode() in d)
     assert last - first >= 0.5, "토큰이 몰려서 나왔다(flush되지 않음)"
+
+
+def test_content가_문자열이_아니면_세_층_모두_Error(fake):
+    fake.script = lambda h: send_lines(h, [chunk("a"), chunk(["가"]), done_chunk()])
+    for name, c in clients(fake.host):
+        events = collect(c)
+        assert events[0] == Token("a"), name
+        assert isinstance(events[-1], Error) and len(events) == 2, name

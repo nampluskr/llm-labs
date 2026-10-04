@@ -16,19 +16,23 @@
   - 노트북은 `THINK=False`로 고정했다. 사고 과정 표시는 아직 미정이다(Phase 3 전에 정한다).
 - **적대적 검증:** 아직 하지 않았다. 필수 통과 Phase가 아니다(Phase 2·3).
 
-### Phase 2 — 공통 호출 층 (2026-10-04) — 구현 완료, 적대적 검증 대기
+### Phase 2 — 공통 호출 층 (2026-10-04) — 완료
 
 - **무엇을:** `src/local_chat/clients/`에 호출 층 3개(`ollama_client.py`·`langchain_client.py`·`http_client.py`)와 공유 이벤트(`events.py`)를 만들었다. 모두 `stream(messages, *, model, options)` 제너레이터이고 `Token`을 0개 이상, 마지막에 `Done`(통계) 또는 `Error`(kind: connection·model_not_found·other)를 정확히 하나 낸다. 도중에 `close()`하면 연결이 닫히고 마지막 이벤트 없이 끝난다. 콘솔 진입점 `python -m local_chat.console`이 세 방식을 차례로 돌려 토큰을 순차 출력하고 tok/s를 한 줄 출력한다.
 - **결과:** `src/local_chat/`(패키지, uv_build)와 `tests/test_clients.py`. `pyproject.toml`에 pytest와 빌드 설정을 추가했다.
 - **검증:**
   - 실제 Ollama(`qwen3:8b`)로 `python -m local_chat.console --client all`을 실행했다. 세 방식 모두 한글 토큰을 순차 출력하고 `[이름] N토큰 | 44.x tok/s`를 한 줄 출력했다.
-  - 가짜 Ollama 서버 테스트 12개 통과: 같은 입력에 세 층이 같은 이벤트, 요청 본문(모델·옵션·메시지·think=False) 동일, done 뒤 빈 청크, 모델 없음, 서버 없음, 스트림 도중 오류줄, done 없이 끊김, 해석 불가 줄, 통계 없는 done, 중단 시 서버가 연결 끊김을 봄, 콘솔 출력·종료 코드.
+  - 가짜 Ollama 서버 테스트 통과(최종 18개; 아래 적대적 검증 보완 포함). 처음 12개: 같은 입력에 세 층이 같은 이벤트, 요청 본문(모델·옵션·메시지·think=False) 동일, done 뒤 빈 청크, 모델 없음, 서버 없음, 스트림 도중 오류줄, done 없이 끊김, 해석 불가 줄, 통계 없는 done, 중단 시 서버가 연결 끊김을 봄, 콘솔 출력·종료 코드.
 - **특이사항:**
   - 테스트가 불일치 하나를 잡았다. 통계가 없는 `done` 청크를 http는 오류로 처리했는데 ollama·langchain은 `Done(None, None)`을 냈다. 공통 `make_done`으로 검증해 세 층이 모두 `Error`를 내게 고쳤다.
   - 콘솔 `run()`의 `out=sys.stdout` 기본값이 import 시점에 고정돼 출력 캡처가 안 되던 것을 `None` → 호출 시점 `sys.stdout`으로 고쳤다.
   - 한글 인코딩(Phase 2 콘솔): 진입점에서 stdout을 UTF-8로 맞춘다. HTTP는 응답을 UTF-8로 해석한다. 테스트에 한글·이모지 토큰을 넣었다.
   - 이 환경의 `uv run pytest`는 rtk가 출력을 줄여 "No tests collected"로 보인다. `rtk proxy uv run python -m pytest tests`로 원본 출력을 확인했다.
-- **적대적 검증:** 필수 통과 Phase. 세션 내 리뷰어 → Codex 순서로 진행 예정.
+- **적대적 검증:** 필수 통과 Phase. 세션 내 리뷰어(Critical·Major 없음, Minor 4건 모두 반영) → Codex `gpt-6.1-sol` 2회(2/3). 기록은 `docs/reviews/A2.md`.
+  - Critical 없음. Major 3·Minor 2(1회차)와 Major 2·Minor 2(2회차) 중 오류 본문의 비문자열 `error`(예외 누출), SDK 층 읽기 타임아웃 없음, 비문자열 `content`, 콘솔 인코딩·flush 테스트 공백, 테스트 멈춤 가능성을 고쳤다.
+  - 고치지 않은 것: 프로토콜을 어긴 응답(통계가 문자열, 빈 줄)에서 SDK와 HTTP의 성공/오류 판정이 다른 점, 실패 시 tok/s 줄 없음. 근거는 A2의 "유효하지 않은 지적과 반박 근거".
+  - 알려진 한계: 막힌 `next()`는 다른 스레드의 `close()`로 못 끊는다(읽기 타임아웃 300초가 상한). Phase 3 UI는 작업 스레드 + 중단 플래그를 써야 한다.
+  - 검증 도중 호출 층에 `read_timeout` 인자(기본 300초)가 생겼다. Phase 2 완료 조건에는 없던 것이지만 세 층의 종료 동등성을 위해 필요했다.
 
 ## 계획 외 개선
 

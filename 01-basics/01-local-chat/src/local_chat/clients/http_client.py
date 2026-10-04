@@ -31,6 +31,8 @@ class HttpClient:
                         yield Error(classify(None, str(d["error"])), str(d["error"]))
                         return
                     piece = d.get("message", {}).get("content")
+                    if piece is not None and not isinstance(piece, str):
+                        raise ValueError(f"message.content가 문자열이 아니다: {piece!r}")
                     if piece:
                         yield Token(piece)
                     if d.get("done"):
