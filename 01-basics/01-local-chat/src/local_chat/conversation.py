@@ -18,6 +18,7 @@ from pathlib import Path
 FORMAT = "local-chat"
 VERSION = 1
 MAX_BYTES = 10 * 1024 * 1024  # 이보다 큰 파일은 읽지 않는다
+MAX_MESSAGES = 20000  # 이보다 많은 메시지는 읽지도 저장하지도 않는다(화면이 그 많은 말풍선을 그리다 멈추지 않게)
 ROLES = ("user", "assistant")  # 이 순서로 번갈아 온다
 
 
@@ -31,16 +32,23 @@ class _DuplicateKey(ValueError):
 
 def _no_duplicate_keys(pairs):
     """json.loads는 중복 키를 조용히 마지막 값으로 덮는다. 검증이 보지 못하는 값이 쓰이지 않게 거절한다."""
-    keys = [k for k, _ in pairs]
-    if len(set(keys)) != len(keys):
-        raise _DuplicateKey(next(k for k in keys if keys.count(k) > 1))
+    seen = set()  # 한 번만 훑는다. 키가 많은 파일에서 오래 걸리지 않게(중복 확인을 목록 검색으로 하면 제곱 시간이 든다)
+    for key, _ in pairs:
+        if key in seen:
+            raise _DuplicateKey(key)
+        seen.add(key)
     return dict(pairs)
+
+
+def _reject_constant(name):
+    """NaN·Infinity·-Infinity는 JSON이 아니다. 파이썬의 json은 기본으로 받아들이므로 거절한다."""
+    raise ValueError(f"JSON에 없는 상수: {name}")
 
 
 def parse(text: str) -> list[dict]:
     """JSON 문자열에서 검증된 messages를 꺼낸다. 올바르지 않으면 ConversationError."""
     try:
-        data = json.loads(text, object_pairs_hook=_no_duplicate_keys)
+        data = json.loads(text, object_pairs_hook=_no_duplicate_keys, parse_constant=_reject_constant)
     except _DuplicateKey as e:
         raise ConversationError(f"같은 키가 두 번 나온다: {e.args[0]!r}") from None
     except (ValueError, RecursionError) as e:  # 깨진 JSON, 너무 깊게 중첩된 JSON
@@ -60,6 +68,8 @@ def parse(text: str) -> list[dict]:
         raise ConversationError("대화 파일이 아니다(최상위가 객체나 배열이어야 한다)")
     if not isinstance(raw, list):
         raise ConversationError("messages가 배열이 아니다")
+    if len(raw) > MAX_MESSAGES:
+        raise ConversationError(f"메시지가 너무 많다(최대 {MAX_MESSAGES}개)")
     messages = []
     for i, item in enumerate(raw):
         if not isinstance(item, dict):
@@ -98,6 +108,8 @@ def save_file(path: str | os.PathLike, messages: list[dict], model: str | None =
     target = Path(path)
     tmp_name = None
     try:
+        if len(messages) > MAX_MESSAGES:  # 열 수 없는 파일을 만들지 않는다
+            raise ConversationError(f"메시지가 너무 많아 저장할 수 없다(최대 {MAX_MESSAGES}개)")
         data = dumps(messages, model).encode("utf-8")  # 인코딩을 명시한다(Windows 기본은 cp949). 쓸 수 없는 문자는 여기서 UnicodeError
         if len(data) > MAX_BYTES:  # 읽을 수 없는 크기의 파일을 만들지 않는다(저장은 되는데 다시 열 수 없는 파일이 된다)
             raise ConversationError(f"대화가 너무 커서 저장할 수 없다(파일 최대 {MAX_BYTES // (1024 * 1024)}MB)")

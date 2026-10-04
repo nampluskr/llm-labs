@@ -257,3 +257,72 @@ def test_열기_한도_바로_아래의_파일을_복원해_다시_저장해도_
         assert "너무 커서" in str(e) and not dst.exists()  # 저장이 거절됐다
     else:
         assert load_file(dst) == messages  # 저장됐다면 다시 열린다
+
+
+def test_키가_아주_많은_파일의_중복_키_검사가_제곱_시간이_아니다():
+    """중복을 목록 검색으로 찾으면 키 10만 개에서 수십억 번 비교한다. 파일 크기 한도로는 처리 시간이 제한되지 않는다."""
+    import time
+
+    keys = ",".join(f'"k{i}":0' for i in range(100_000))
+    text = "{" + keys + ',"k99999":1,"messages":[]}'
+    assert len(text) < conversation.MAX_BYTES
+    t0 = time.perf_counter()
+    with pytest.raises(ConversationError, match="같은 키"):
+        parse(text)
+    assert time.perf_counter() - t0 < 3
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_JSON에_없는_숫자_상수는_거절하고_현재_대화를_지우지_않는다(constant):
+    for text in ('{"messages": [], "model": %s}' % constant, '{"messages": [], "x": [%s]}' % constant, '[%s]' % constant):
+        with pytest.raises(ConversationError):
+            parse(text)
+
+
+def test_메시지_수_상한을_읽기와_저장_모두에_건다(tmp_path, monkeypatch):
+    monkeypatch.setattr(conversation, "MAX_MESSAGES", 4)
+    pairs = [u("1"), a("1"), u("2"), a("2")]
+    assert parse(json.dumps(pairs)) == pairs  # 상한과 같으면 읽는다
+    with pytest.raises(ConversationError, match="너무 많다"):
+        parse(json.dumps(pairs + [u("3"), a("3")]))
+    path = tmp_path / "chat.json"
+    save_file(path, pairs)  # 상한과 같으면 저장되고
+    assert load_file(path) == pairs  # 다시 열린다
+    with pytest.raises(ConversationError, match="너무 많아"):
+        save_file(path, pairs + [u("3"), a("3")])  # 넘으면 저장하지 않는다
+    assert load_file(path) == pairs  # 기존 파일은 그대로다
+
+
+def test_쓰기_중_실패와_임시_파일_정리_실패에도_ConversationError이고_기존_파일은_그대로다(tmp_path, monkeypatch):
+    path = tmp_path / "chat.json"
+    save_file(path, [u("옛 질문"), a("옛 답")])
+    before = path.read_bytes()
+    real_fdopen = os.fdopen
+
+    class FailingFile:
+        def __init__(self, f):
+            self._f = f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._f.close()
+
+        def write(self, data):
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(conversation.os, "fdopen", lambda fd, *a, **k: FailingFile(real_fdopen(fd, *a, **k)))
+    with pytest.raises(ConversationError, match="저장하지 못했다"):
+        save_file(path, SAMPLE)  # 쓰는 도중 실패
+    assert path.read_bytes() == before and [p.name for p in tmp_path.iterdir()] == ["chat.json"]
+
+    real_unlink = os.unlink
+    monkeypatch.setattr(conversation.os, "unlink", lambda p: (_ for _ in ()).throw(PermissionError(13, "Access is denied")))
+    with pytest.raises(ConversationError, match="저장하지 못했다"):
+        save_file(path, SAMPLE)  # 임시 파일을 지우지 못해도 원래 오류를 가리지 않는다
+    assert path.read_bytes() == before
+    monkeypatch.setattr(conversation.os, "unlink", real_unlink)
+    for leftover in tmp_path.iterdir():
+        if leftover.name != "chat.json":
+            leftover.unlink()  # 정리 실패 시험이 남긴 임시 파일

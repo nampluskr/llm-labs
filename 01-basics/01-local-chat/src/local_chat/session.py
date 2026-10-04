@@ -55,11 +55,16 @@ class ChatSession:
         self._idle = threading.Event()  # 질문을 처리 중이 아니면(종료 이벤트 emit까지 끝났으면) 켜져 있다
         self._idle.set()
         self._closed = False
+        self._version = 0  # 대화가 바뀔 때마다(끝난 턴이 기록될 때, 복원할 때) 오른다. 화면이 자기가 아는 버전을 보내 어긋남을 알아챈다
         self._workers: set[threading.Thread] = set()  # 아직 끝나지 않은 작업 스레드(중단된 턴의 것 포함)
 
     @property
     def turn_count(self) -> int:
         return len(self._turns)
+
+    @property
+    def version(self) -> int:
+        return self._version
 
     @property
     def model(self) -> str:
@@ -91,6 +96,7 @@ class ChatSession:
             if self._busy:
                 return {"ok": False, "reason": "busy"}
             self._turns = turns
+            self._version += 1
         return {"ok": True}
 
     def configure(self, model: str | None = None, options: dict | None = None, think: bool | None = None) -> dict:
@@ -174,6 +180,7 @@ class ChatSession:
         # 보낼 수 없고, 저장하면 다시 열 수 없는 파일이 된다(열기는 빈 content를 거절한다). 실패한 턴과 같게 다룬다
         if outcome in ("done", "stopped") and answer.strip():
             self._turns.append((turn.text, answer))  # 사용자가 본 대로 남긴다(중단이면 본 데까지)
+            self._version += 1
         self._busy = False
 
     def _set_idle(self, turn: _Turn) -> None:

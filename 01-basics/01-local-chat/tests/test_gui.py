@@ -463,3 +463,57 @@ def test_창에서_실제_파일_대화상자를_취소하면_저장도_열기�
     assert r["bubbles"] == r["before"] == [["user", "지켜야 할 질문"], ["assistant", "답"]]
     assert r["controls"] == {"send": False, "save": False, "open": False}  # 취소한 뒤 다시 쓸 수 있다
     assert not (tmp_path / "쓰이면_안_되는_파일.json").exists()
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_서버의_대화가_화면_모르게_바뀌어도_질문을_보내기_전에_알아채고_서버의_대화로_다시_그린다(fake, tmp_path, name):
+    from local_chat import conversation
+
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    path = tmp_path / "파일의 대화.json"
+    file_messages = [{"role": "user", "content": "파일의 질문"}, {"role": "assistant", "content": "파일의 답"}]
+    conversation.save_file(path, file_messages)
+    fake.requests.clear()
+    r = run_driver(name, fake.host, "desync", pick=path)
+    assert "driver_error" not in r, r
+    assert r["server"] == 2 and r["before"] == [["user", "화면에 있던 질문"], ["assistant", "답"]]  # 화면은 옛 대화 그대로였다
+    assert len(fake.requests) == 2 and fake.requests[0]["messages"][-1]["content"] == "화면에 있던 질문"
+    # 어긋난 채 보낸 질문은 모델에 가지 않고 화면이 서버의 대화로 다시 그려진다. 입력한 질문은 남는다
+    assert "다시 그렸습니다" in r["status"] and r["after"] == [["user", "파일의 질문"], ["assistant", "파일의 답"]]
+    assert r["input"] == "어긋난 채 보낸 질문" and r["controls"] == {"send": False, "open": False}
+    # 다시 보내면 서버의 대화(파일의 대화)가 문맥으로 가고 화면과 같다
+    assert [m["content"] for m in fake.requests[-1]["messages"]][1:] == ["파일의 질문", "파일의 답", "어긋난 채 보낸 질문"]
+    assert r["resent"]["status"] == "1토큰 · 1.0 tok/s"
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_열기_응답이_영영_오지_않아도_서버가_놀면_서버의_대화로_맞추고_잠금을_푼다(fake, tmp_path, name):
+    from local_chat import conversation
+
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    path = tmp_path / "파일의 대화.json"
+    conversation.save_file(path, [{"role": "user", "content": "파일의 질문"}, {"role": "assistant", "content": "파일의 답"}])
+    fake.requests.clear()
+    r = run_driver(name, fake.host, "load_never_settles", pick=path)
+    assert "driver_error" not in r, r
+    assert r["recovered"] is True and r["seconds"] < 30  # 영구히 잠기지 않는다
+    assert r["bubbles"] == [["user", "파일의 질문"], ["assistant", "파일의 답"]]  # 화면 = 서버 = 파일
+    assert r["controls"] == {"send": False, "open": False}
+    assert [m["content"] for m in fake.requests[-1]["messages"]][1:] == ["파일의 질문", "파일의 답", "넷째 질문"]
+
+
+def test_창은_상한만큼_많은_메시지를_불러와도_멈추지_않고_모두_그린다(fake, tmp_path):
+    from local_chat import conversation
+
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    pairs = 4000  # 메시지 8000개
+    messages = []
+    for i in range(pairs):
+        messages += [{"role": "user", "content": f"질문{i}"}, {"role": "assistant", "content": f"답{i}"}]
+    path = tmp_path / "많은 대화.json"
+    conversation.save_file(path, messages)
+    r = run_driver("http", fake.host, "load_many", pick=path)
+    assert "driver_error" not in r, r
+    assert r["done"] is True and r["count"] == 2 * pairs and r["alive"] == 2
+    assert r["first_last"] == ["질문0", f"답{pairs - 1}"]
+    assert r["seconds"] < 30, r["seconds"]  # 말풍선마다 배치를 다시 계산하면 이 크기에서 크게 느려진다

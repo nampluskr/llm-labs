@@ -1,6 +1,6 @@
 """실제 pywebview 창을 띄워 DOM을 조작·관찰한다. 사용: python gui_driver.py <client> <host> <scenario> [entry]
 시나리오: ok(두 질문) · stop(중단 버튼, 취소된 요청의 늦은 이벤트까지 관찰) · many(12번 연속 질문)
-         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · save·load·load_corrupt·load_over·load_lost·load_early_lost·dialog_save·dialog_open·dialog_cancel(대화 저장·열기. dialog_*는 실제 네이티브 파일 대화상자) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
+         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · save·load·load_corrupt·load_over·load_lost·load_early_lost·dialog_save·dialog_open·dialog_cancel(대화 저장·열기. dialog_*는 실제 네이티브 파일 대화상자) · desync·load_never_settles·load_many · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
 entry를 주면 build()가 아니라 앱 진입점 local_chat.app_<client>.main(argv)로 창을 띄운다.
 결과를 JSON 한 줄로 stdout에 낸다. pytest(test_gui.py)가 서브프로세스로 돌린다."""
 
@@ -16,6 +16,7 @@ from local_chat.clients import CLIENTS
 from local_chat.webapp import build
 
 LAST = "document.querySelector('.msg.assistant:last-of-type')"
+API = None  # build()로 띄운 경우의 Api. 화면이 모르게 서버의 대화를 바꾸는 시나리오(desync)에서 쓴다
 
 
 def _dialog_helper():
@@ -349,6 +350,41 @@ def drive(window, result, scenario):
             time.sleep(0.3)
             result["after"] = json.loads(js(window, "JSON.stringify({model: document.getElementById('model').value, numctx: document.getElementById('numctx').value, info: document.getElementById('info').textContent})"))
             result["ask"] = ask(window, "질문")
+        elif scenario in ("desync", "load_never_settles", "load_many"):
+            wait(window, "document.getElementById('save').disabled === false", 15)
+            bubbles = "JSON.stringify(Array.from(document.querySelectorAll('.msg')).map(m => [m.classList.contains('user') ? 'user' : 'assistant', m.textContent]))"
+            pick = os.environ["GUI_DRIVER_PICK"]
+            if scenario == "desync":
+                ask(window, "화면에 있던 질문")
+                result["server"] = API._load_from(pick)["count"]  # 화면이 모르게 서버의 대화가 파일의 대화로 바뀐다(열기 응답이 화면에 도착하지 못한 것과 같다)
+                result["before"] = json.loads(js(window, bubbles))
+                js(window, "document.getElementById('input').value = '어긋난 채 보낸 질문'; document.getElementById('send').click(); 0")
+                wait(window, "document.getElementById('status').textContent.includes('다시 그렸습니다')", 15)
+                time.sleep(0.3)
+                result["status"] = js(window, "document.getElementById('status').textContent")
+                result["after"] = json.loads(js(window, bubbles))
+                result["input"] = js(window, "document.getElementById('input').value")
+                result["controls"] = json.loads(js(window, "JSON.stringify({send: document.getElementById('send').disabled, open: document.getElementById('open').disabled})"))
+                result["resent"] = ask(window, "어긋난 채 보낸 질문")  # 같은 질문을 다시 보낸다
+            elif scenario == "load_never_settles":
+                ask(window, "화면에 있던 질문")
+                # 서버의 열기는 끝나는데 브리지 응답이 영영 오지 않는 것처럼 만든다(약속이 끝나지 않는다)
+                js(window, "window.__load = window.pywebview.api.load_chat; window.pywebview.api.load_chat = () => { window.__load(); return new Promise(() => {}); }; 0")
+                js(window, "document.getElementById('status').textContent = ''; document.getElementById('open').click(); 0")
+                t0 = time.time()
+                result["recovered"] = wait(window, "document.getElementById('status').textContent.includes('서버의 대화로 화면을 맞췄습니다')", 40)
+                result["seconds"] = round(time.time() - t0, 1)
+                result["bubbles"] = json.loads(js(window, bubbles))
+                result["controls"] = json.loads(js(window, "JSON.stringify({send: document.getElementById('send').disabled, open: document.getElementById('open').disabled})"))
+                result["next"] = ask(window, "넷째 질문")  # 복구한 뒤 버전이 맞아 질문이 나간다
+            else:
+                js(window, "document.getElementById('status').textContent = ''; document.getElementById('open').click(); 0")
+                t0 = time.time()
+                result["done"] = wait(window, "document.getElementById('status').textContent.includes('불러왔습니다')", 60)
+                result["seconds"] = round(time.time() - t0, 1)
+                result["count"] = js(window, "document.querySelectorAll('.msg').length")
+                result["first_last"] = json.loads(js(window, "JSON.stringify([document.querySelector('.msg:first-child').textContent, document.querySelector('.msg:last-child').textContent])"))
+                result["alive"] = js(window, "1 + 1")  # 화면이 응답한다
         elif scenario in ("dialog_save", "dialog_open", "dialog_cancel"):
             wait(window, "document.getElementById('save').disabled === false", 15)
             bubbles = "JSON.stringify(Array.from(document.querySelectorAll('.msg')).map(m => [m.classList.contains('user') ? 'user' : 'assistant', m.textContent]))"
@@ -455,6 +491,7 @@ if __name__ == "__main__":
         module.main(["--host", host, "--model", "qwen3:4b"])
     else:
         window, api = build(CLIENTS[client_name](host=host))
+        API = api
         pick = os.environ.get("GUI_DRIVER_PICK")
         if pick:  # 파일 대화상자 대신 시험이 정한 경로를 쓴다
             delay = float(os.environ.get("GUI_DRIVER_PICK_DELAY", "0"))  # 주면 경로를 고르는 데 그만큼 걸린다(느린 대화상자)

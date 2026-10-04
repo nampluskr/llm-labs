@@ -608,7 +608,7 @@ def test_사고_과정만_오고_끝난_턴은_기록하지_않아_저장한_파
     fake.script = lambda h: send_lines(h, [chunk("", thinking="생각만 하고"), done_chunk(1, 1_000_000_000)])
     api = api_for(name)
     ask(api, "질문")  # 화면에는 정상 종료로 보인다
-    assert api.history() == {"messages": [], "file_busy": False}
+    assert {k: v for k, v in api.history().items() if k != "version"} == {"messages": [], "file_busy": False}
     path = tmp_path / "chat.json"
     assert api._save_to(str(path))["count"] == 0
     fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
@@ -643,13 +643,13 @@ def test_history는_서버가_가진_대화를_돌려주고_답변_중에는_Non
 
     api = api_for(name)
     ask(api, "첫 질문")
-    assert api.history() == {"messages": [{"role": "user", "content": "첫 질문"}, {"role": "assistant", "content": "답"}], "file_busy": False}
+    assert {k: v for k, v in api.history().items() if k != "version"} == {"messages": [{"role": "user", "content": "첫 질문"}, {"role": "assistant", "content": "답"}], "file_busy": False}
     fake.script = script
     api.send("긴 답변")
     deadline = time.time() + 5
     while len(api._window.events) < 2 and time.time() < deadline:
         time.sleep(0.01)
-    assert api.history() == {"messages": None, "file_busy": False}
+    assert {k: v for k, v in api.history().items() if k != "version"} == {"messages": None, "file_busy": False}
     gate.set()
     api._session.join(10)
 
@@ -676,7 +676,7 @@ def test_파일을_읽는_동안에는_질문과_모델_전환과_다른_파일_
     t = threading.Thread(target=lambda: out.update(api._load_from(str(path))))
     t.start()
     assert reading.wait(5)
-    assert api.history() == {"messages": [], "file_busy": True}  # 서버가 파일 작업 중임을 알린다
+    assert {k: v for k, v in api.history().items() if k != "version"} == {"messages": [], "file_busy": True}  # 서버가 파일 작업 중임을 알린다
     assert api.send("읽는 중에 시작한 질문") == {"ok": False, "reason": "file"}
     assert api.set_model("exaone3.5:7.8b")["reason"] == "file_busy" and fake.unloads == []
     assert api._save_to(str(tmp_path / "other.json"))["reason"] == "file_busy" and not (tmp_path / "other.json").exists()
@@ -684,7 +684,7 @@ def test_파일을_읽는_동안에는_질문과_모델_전환과_다른_파일_
     proceed.set()
     t.join(10)
     assert out["ok"] is True and out["count"] == 2
-    assert api.history() == {"messages": out["messages"], "file_busy": False}  # 파일의 대화 그대로, 작업이 끝났다
+    assert {k: v for k, v in api.history().items() if k != "version"} == {"messages": out["messages"], "file_busy": False}  # 파일의 대화 그대로, 작업이 끝났다
     assert api.send("끝난 뒤의 질문") == {"ok": True}
     api._session.join(10)
 
@@ -779,3 +779,63 @@ def test_읽을_수_없는_크기가_될_대화는_저장하지_않고_기존_�
     monkeypatch.setattr(conversation, "MAX_BYTES", len(before))
     assert api._save_to(str(path))["ok"] is True  # 한도 안이면 저장되고
     assert api._load_from(str(path))["ok"] is True  # 저장한 파일은 항상 다시 열 수 있다
+
+
+# ---------------------------------------------------------------- Phase 5 보완: 대화 버전 확인, 감시
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_화면이_아는_대화_버전이_서버와_다르면_질문을_보내지_않고_서버의_대화를_돌려준다(fake, api_for, tmp_path, name):
+    """저장·열기 응답이 화면에 도착하지 못하는 등 어떤 이유로든 화면과 서버의 대화가 어긋나면, 질문이 보이지 않는 문맥으로 나가지 않게 한다."""
+    from local_chat import conversation
+
+    api = api_for(name)
+    v0 = api.info()["version"]
+    assert api.send("첫 질문", v0) == {"ok": True}  # 맞는 버전이면 보낸다
+    api._session.join(10)
+    v1 = api.history()["version"]
+    assert v1 == v0 + 1  # 끝난 턴이 기록되면 버전이 오른다
+    path = tmp_path / "chat.json"
+    conversation.save_file(path, [{"role": "user", "content": "파일의 질문"}, {"role": "assistant", "content": "파일의 답"}])
+    fake.requests.clear()
+    assert api._load_from(str(path))["version"] == v1 + 1  # 화면이 이 응답을 못 받았다고 하자(화면은 v1을 안다)
+    r = api.send("보이지 않는 문맥으로 나가면 안 되는 질문", v1)
+    assert r["ok"] is False and r["reason"] == "desync" and r["version"] == v1 + 1
+    assert r["messages"] == [{"role": "user", "content": "파일의 질문"}, {"role": "assistant", "content": "파일의 답"}]
+    assert fake.requests == []  # 모델에는 아무것도 가지 않았다
+    assert api.send("다시 보낸 질문", r["version"]) == {"ok": True}  # 서버의 버전을 알면 보낸다
+    api._session.join(10)
+    contents = [m["content"] for m in fake.requests[-1]["messages"]]
+    assert contents[1:] == ["파일의 질문", "파일의 답", "다시 보낸 질문"]
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_버전은_기록되지_않는_턴과_실패에는_오르지_않고_복원에는_오른다(fake, api_for, tmp_path, name):
+    from local_chat import conversation
+
+    api = api_for(name)
+    v = api.info()["version"]
+    fake.script = lambda h: send_lines(h, [chunk("", thinking="생각만"), done_chunk(1, 1_000_000_000)])  # 빈 답: 기록되지 않는다
+    ask(api, "빈 답이 되는 질문")
+    assert api.history()["version"] == v
+    fake.script = lambda h: send_lines(h, [{"error": "boom"}], status=500)
+    ask(api, "실패하는 질문")
+    assert api.history()["version"] == v
+    path = tmp_path / "empty.json"
+    conversation.save_file(path, [])
+    api._load_from(str(path))
+    assert api.history()["version"] == v + 1  # 내용이 같아 보여도 복원은 버전을 올린다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_종료_이벤트는_서버의_대화_버전을_알린다(fake, api_for, name):
+    api = api_for(name)
+    ask(api, "질문")
+    terminal = [json.loads(c[len("window.onChatEvent("):-1]) for c in api._window.events if '"done"' in c]
+    assert terminal and terminal[-1]["version"] == api.history()["version"]
+
+
+def test_버전을_주지_않으면_확인하지_않는다(fake, api_for):
+    api = api_for("http")
+    assert api.send("질문") == {"ok": True}  # 시험·내부 호출 호환
+    api._session.join(10)

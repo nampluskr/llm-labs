@@ -87,6 +87,7 @@
   let locked = false;   // 모델 전환·옵션 적용 중
   let ready = false;   // pywebview 브리지가 준비되면 true. 그 전에는 보내지 않는다
   let initStarted = false;
+  let knownVersion = null;   // 화면이 알고 있는 서버 대화의 버전. 질문을 보낼 때 같이 보낸다
   let seq = 0;   // 보낼 때마다 올린다. 늦게 돌아온 응답이 다른 질문의 화면을 건드리지 못하게 한다
 
   function refreshControls() {
@@ -141,6 +142,7 @@
   // 파이썬이 evaluate_js로 부른다
   window.onChatEvent = function (ev) {
     const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+    if (ev.version !== undefined) knownVersion = ev.version;   // 종료 이벤트가 서버의 대화 버전을 알려 준다
     if (ev.type === "thinking") {
       if (current) ensureThink().querySelector(".think-body").appendChild(document.createTextNode(ev.text));   // 텍스트 노드: HTML로 해석하지 않는다
     } else if (ev.type === "token") {
@@ -194,7 +196,7 @@
     input.value = "";
     let r;
     try {
-      r = await window.pywebview.api.send(text);
+      r = await window.pywebview.api.send(text, knownVersion);
     } catch (e) {   // 브리지 호출이 실패하면 어떤 요청도 시작되지 않았다
       r = { ok: false, reason: "bridge" };
     }
@@ -204,6 +206,14 @@
     if (id !== seq || current !== bubble) return;
     log.removeChild(bubble); log.removeChild(userEl);
     current = null; thinkEl = null; input.value = text; setBusy(false);
+    if (r.reason === "desync") {
+      // 화면과 서버의 대화가 어긋났다(예: 열기 응답이 화면에 도착하지 못했다). 서버의 대화로 다시 그리고 질문은 다시 보내게 한다
+      knownVersion = r.version;
+      if (r.messages) renderMessages(r.messages);
+      input.value = text;
+      statusEl.textContent = "화면과 서버의 대화가 달라 서버의 대화로 다시 그렸습니다. 질문을 다시 보내세요.";
+      return;
+    }
     statusEl.textContent = r.reason === "busy" ? "이전 답변을 처리 중입니다."
       : r.reason === "switching" ? "모델을 바꾸는 중입니다. 잠시 뒤에 다시 보내세요."
       : r.reason === "file" ? "대화를 저장하거나 여는 중입니다. 잠시 뒤에 다시 보내세요." : "보내지 못했습니다. 다시 시도하세요.";
@@ -308,11 +318,32 @@
     return String(path).split(/[\\/]/).pop();
   }
 
+  function watchLostResponse(promise) {
+    // 응답이 영영 오지 않는 경우(약속이 끝나지 않는다)를 대비한다. 서버의 파일 작업이 끝났는데(바쁘지 않은데) 한참 응답이 없으면 잃은 것으로 본다.
+    // 대화상자가 열려 있거나 파일을 읽는 동안은 서버가 바쁘므로 기다린다
+    let timer;
+    const lost = { ok: false, reason: "bridge", message: "처리하지 못했습니다." };
+    const watchdog = new Promise((resolve) => {
+      let idle = 0;
+      timer = setInterval(async () => {
+        try {
+          const h = await window.pywebview.api.history();
+          idle = h.file_busy ? 0 : idle + 1;
+          if (idle >= 3) resolve(lost);
+        } catch (e) {
+          resolve(lost);
+        }
+      }, 1500);
+    });
+    return Promise.race([promise, watchdog]).finally(() => clearInterval(timer));
+  }
+
   async function runFile(call, okMessage) {
     setLocked(true);   // 대화상자를 여는 동안과 파일을 읽고 쓰는 동안 다른 조작을 막는다
     let r;
     try {
-      r = await call();
+      r = await watchLostResponse(call());
+      if (r.reason === "bridge") return r;
     } catch (e) {
       // 응답이 오지 않았다. 서버에서는 처리가 아직 진행 중이거나 끝났을 수 있다. 잠금을 풀지 않고 호출한 쪽이 서버 상태를 확인한다
       return { ok: false, reason: "bridge", message: "처리하지 못했습니다." };
@@ -347,7 +378,15 @@
     log.textContent = "";
     current = null;
     thinkEl = null;
-    for (const m of messages) addMsg(m.role === "user" ? "user" : "assistant", m.content);
+    const fragment = document.createDocumentFragment();   // 한 번에 붙인다. 말풍선마다 스크롤 위치를 읽고 쓰면 배치가 말풍선 수만큼 다시 계산된다
+    for (const m of messages) {
+      const el = document.createElement("div");
+      el.className = "msg " + (m.role === "user" ? "user" : "assistant");
+      el.textContent = m.content;
+      fragment.appendChild(el);
+    }
+    log.appendChild(fragment);
+    log.scrollTop = log.scrollHeight;
   }
 
   saveBtn.addEventListener("click", async () => {
@@ -365,11 +404,13 @@
     const r = await runFile(() => window.pywebview.api.load_chat(), (r) => r.count + "개 메시지를 불러왔습니다: " + baseName(r.path));
     if (r.ok) {
       renderMessages(r.messages);   // 불러온 대화로 화면을 다시 그린다
+      knownVersion = r.version;
     } else if (r.reason === "bridge") {
       // 응답이 오지 않았다. 서버의 열기가 끝나기를 기다린 뒤 서버가 실제로 가진 대화로 화면을 맞춘다
       const h = await settleAfterLostResponse();
       if (!h || !h.messages) return lockForUnknownState();
       renderMessages(h.messages);
+      knownVersion = h.version;
       statusEl.textContent = "응답이 오지 않아 서버의 대화로 화면을 맞췄습니다.";
       setLocked(false);
     }   // 그 밖의 실패(파일이 올바르지 않음 등)는 서버 대화가 그대로이므로 화면도 그대로다
@@ -380,7 +421,9 @@
     initStarted = true;   // 이벤트와 직접 호출이 겹쳐도 한 번만 한다
     try {
       fillModels(await window.pywebview.api.models());
-      renderInfo(await window.pywebview.api.info());
+      const info = await window.pywebview.api.info();
+      renderInfo(info);
+      knownVersion = info.version;   // 창을 열 때의 대화 버전
       ready = true;
       refreshControls();   // 보내기 버튼과 설정 입력을 연다
     } catch (e) {

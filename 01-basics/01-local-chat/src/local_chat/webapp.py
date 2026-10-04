@@ -42,9 +42,13 @@ class Api:
 
     def _emit(self, event: dict) -> None:
         # json.dumps의 기본값(ensure_ascii=True)이라 U+2028 같은 문자도 이스케이프돼 나가 JS 문자열로 안전하다
+        if event["type"] in ("done", "stopped", "error"):  # 종료 이벤트 시점에는 대화 기록 갱신이 끝나 있다. 화면이 버전을 따라간다
+            event = {**event, "version": self._session.version}
         self._window.evaluate_js("window.onChatEvent(" + json.dumps(event) + ")")
 
-    def send(self, text):
+    def send(self, text, version=None):
+        """질문을 보낸다. version은 화면이 알고 있는 대화 버전이다. 서버의 버전과 다르면(저장·열기 응답이 화면에 도착하지 못하는 등으로
+        화면과 서버의 대화가 어긋남) 보내지 않고 서버의 대화를 돌려줘 화면이 다시 그리게 한다. 주지 않으면(None) 확인하지 않는다."""
         # 이전 모델을 내리는 동안 새 모델의 질문이 시작되면 두 모델이 VRAM에서 겹친다(D-6이 막으려는 상황).
         # 전환 표시와 질문 시작이 같은 락 안이라 둘 중 하나만 성립한다: 질문이 먼저면 전환이 거절되고, 전환이 먼저면 질문이 거절된다
         with self._state_lock:
@@ -52,6 +56,8 @@ class Api:
                 return {"ok": False, "reason": "switching"}
             if self._file_busy:
                 return {"ok": False, "reason": "file"}
+            if version is not None and version != self._session.version:
+                return {"ok": False, "reason": "desync", "version": self._session.version, "messages": self._session.export_messages()}
             return self._session.send(text)
 
     def stop(self):
@@ -191,12 +197,12 @@ class Api:
         result = self._session.restore(messages)
         if not result["ok"]:
             return {**result, "message": "답변 중에는 열 수 없다"}
-        return {"ok": True, "path": str(path), "count": len(messages), "messages": messages}
+        return {"ok": True, "path": str(path), "count": len(messages), "messages": messages, "version": self._session.version}
 
     def history(self):
         """지금 서버가 가진 대화(끝난 턴의 질문·답)와 파일 작업 중인지. 저장·열기 응답이 화면에 도착하지 못했을 때 화면을 맞추는 데 쓴다.
         답변 중이면 messages는 None이다."""
-        return {"messages": self._session.export_messages(), "file_busy": self._file_busy}
+        return {"messages": self._session.export_messages(), "file_busy": self._file_busy, "version": self._session.version}
 
     def info(self):
         options = self._session.options
@@ -206,6 +212,7 @@ class Api:
             "num_ctx": options.get("num_ctx"),
             "temperature": options.get("temperature"),
             "think": self._session.think,
+            "version": self._session.version,  # 창을 열 때 화면이 대화 버전을 알게 한다
             # 전환 중이면 모델·think는 임시로 적용된 값일 수 있다(내리기에 실패하면 되돌려진다). 화면은 끝날 때까지 기다린다
             "switching": self._switching,
         }
