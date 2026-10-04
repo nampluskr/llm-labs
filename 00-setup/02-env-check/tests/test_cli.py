@@ -1,6 +1,5 @@
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
 from env_check import cli
@@ -10,11 +9,32 @@ def model(name, size, size_vram=0):
     return SimpleNamespace(model=name, size=size, size_vram=size_vram)
 
 
+class Response:
+    def __init__(self, data=None, body_error=None):
+        self._data, self._body_error = data, body_error
+
+    def json(self):
+        if self._body_error:
+            raise self._body_error
+        return self._data
+
+
+def version_ok(version="0.35.1"):
+    return Response({"version": version})
+
+
 class FakeClient:
     """읽기 전용 호출(list·ps)만 가진다. 적재 호출(generate·chat)을 하면 AttributeError가 난다."""
 
-    def __init__(self, models, loaded):
+    def __init__(self, models, loaded, version_response=None):
         self._models, self._loaded = models, loaded
+        self._version_response = version_response or version_ok()
+
+    def _request_raw(self, method, path, **kw):
+        assert (method, path) == ("GET", "/api/version")
+        if isinstance(self._version_response, Exception):
+            raise self._version_response
+        return self._version_response
 
     def list(self):
         return SimpleNamespace(models=self._models)
@@ -43,9 +63,10 @@ def test_processor_label(size, vram, expected):
     assert cli.processor_label(size, vram) == expected
 
 
-def patch_server(monkeypatch, models, loaded):
-    monkeypatch.setattr(cli, "get_version", lambda host: "0.35.1")
-    monkeypatch.setattr(cli.ollama, "Client", lambda **kw: FakeClient(models, loaded))
+def patch_server(monkeypatch, models, loaded, version_response=None):
+    monkeypatch.setattr(
+        cli.ollama, "Client", lambda **kw: FakeClient(models, loaded, version_response)
+    )
 
 
 def test_main_prints_models_and_loaded(monkeypatch, capsys):
@@ -81,39 +102,36 @@ def test_main_server_down(monkeypatch, capsys):
     assert captured.out == ""
 
 
-def fake_get(response):
-    return lambda url, **kw: response
-
-
-def version_response(status=200, **kw):
-    return httpx.Response(status, request=httpx.Request("GET", "http://x/api/version"), **kw)
-
-
-def test_get_version_parses_response(monkeypatch):
-    monkeypatch.setattr(cli.httpx, "get", fake_get(version_response(json={"version": "0.35.1"})))
-    assert cli.get_version("http://x") == "0.35.1"
+def test_get_version_parses_response():
+    assert cli.get_version(FakeClient([], [])) == "0.35.1"
 
 
 @pytest.mark.parametrize(
-    "response",
+    "version_response",
     [
-        version_response(content=b"<html>not ollama</html>"),
-        version_response(json={}),
-        version_response(status=500, content=b""),
-        version_response(content=b"null"),
-        version_response(content=b"[]"),
-        version_response(json={"version": None}),
-        version_response(json={"version": ""}),
-        version_response(json={"version": {"a": 1}}),
+        Response(body_error=ValueError("Expecting value")),
+        Response({}),
+        Response(None),
+        Response([]),
+        Response({"version": None}),
+        Response({"version": ""}),
+        Response({"version": {"a": 1}}),
+        cli.ollama.ResponseError("", 500),
     ],
-    ids=["html", "no-version-key", "http-500", "null", "list", "version-null", "version-empty", "version-object"],
+    ids=["not-json", "no-version-key", "null", "list", "version-null", "version-empty", "version-object", "http-500"],
 )
-def test_main_unexpected_version_response(monkeypatch, capsys, response):
-    monkeypatch.setattr(cli.httpx, "get", fake_get(response))
+def test_main_unexpected_version_response(monkeypatch, capsys, version_response):
+    patch_server(monkeypatch, [], [], version_response)
     assert cli.main([]) == 1
     captured = capsys.readouterr()
     assert "오류" in captured.err and "Traceback" not in captured.err
     assert captured.out == ""
+
+
+def test_main_timeout(monkeypatch, capsys):
+    patch_server(monkeypatch, [], [], TimeoutError("timed out"))
+    assert cli.main([]) == 1
+    assert "TimeoutError" in capsys.readouterr().err
 
 
 def test_main_prints_connection_and_version(monkeypatch, capsys):

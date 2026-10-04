@@ -1,17 +1,15 @@
 import math
 import sys
 
-import httpx
 import ollama
 
 HOST = "http://127.0.0.1:11434"
 TIMEOUT = 5.0
 
 
-def get_version(host):
-    response = httpx.get(f"{host}/api/version", timeout=TIMEOUT)
-    response.raise_for_status()
-    data = response.json()
+def get_version(client):
+    # ollama 패키지에는 버전 조회 함수가 없어, 패키지가 쓰는 요청 함수로 /api/version을 읽는다(D-7)
+    data = client._request_raw("GET", "/api/version").json()
     version = data.get("version") if isinstance(data, dict) else None
     if not isinstance(version, str) or not version:
         raise ValueError(f"/api/version 응답에 올바른 version이 없다: {data!r}")
@@ -49,11 +47,11 @@ def gb(size):
 
 def main(argv=None):
     try:
-        version = get_version(HOST)
         client = ollama.Client(host=HOST, timeout=TIMEOUT)
+        version = get_version(client)
         models = get_models(client)
         loaded = get_loaded(client)
-    except (httpx.HTTPError, ConnectionError, ollama.ResponseError, ValueError, KeyError) as e:
+    except Exception as e:  # 연결 거부·시간 초과·HTTP 오류·예상 밖 응답 모두 같은 오류 경로로 보낸다
         print(f"오류: Ollama 서버를 확인할 수 없다 ({HOST}): {type(e).__name__}: {e}", file=sys.stderr)
         return 1
 
