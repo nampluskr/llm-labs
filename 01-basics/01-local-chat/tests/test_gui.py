@@ -239,3 +239,17 @@ def test_창_드롭다운에_모든_모델이_보이고_바꾸면_이전_모델�
     assert r["locked_while_busy"] == [[True, True, True]], r["locked_while_busy"]
     assert r["after_busy"] == {"model": False, "numctx": False, "temp": False}
     assert len(fake.requests) == 2  # 거절된 변경은 요청을 만들지 않았다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_모델_전환_중에_보내기와_설정_입력을_잠그고_그_사이_보낸_질문은_나가지_않는다(fake, name):
+    fake.tags = ["qwen3:8b", "exaone3.5:7.8b"]
+    fake.capabilities_by_model = {"qwen3:8b": ["completion", "thinking"], "exaone3.5:7.8b": ["completion"]}
+    fake.unload_delay = 1.5  # 이전 모델 내리기가 오래 걸린다
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    r = run_driver(name, fake.host, "switch_lock")
+    assert "driver_error" not in r, r
+    assert r["locked_during_switch"] == [[True, True, True, True]], r  # 전환 중: 모델·num_ctx·temperature·보내기가 모두 잠김
+    assert r["bubbles_after_switch"] == 0 and fake.requests == []  # 잠긴 사이 보내려 한 질문은 말풍선도 요청도 만들지 않았다
+    assert r["after"]["model"] is False and r["after"]["send"] is False  # 끝나면 풀린다
+    assert "exaone3.5:7.8b" in r["after"]["info"] and len(fake.unloads) == 1

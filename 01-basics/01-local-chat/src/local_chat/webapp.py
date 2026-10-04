@@ -24,6 +24,8 @@ class Api:
         self._client = client
         self._window = None
         self._config_lock = threading.Lock()  # 모델 전환·옵션 변경을 한 번에 하나씩
+        self._state_lock = threading.Lock()  # 전환 표시와 질문 시작을 서로 배타적으로 만든다(짧게만 쥔다)
+        self._switching = False  # 모델 전환 중(이전 모델 내리기 포함)에는 질문을 받지 않는다
         # 설치된 모델 전체(/api/tags). 현재 모델이 목록에 없으면(미설치이거나 목록을 못 받음) 맨 앞에 둔다
         self._catalog = list_models(client.host)
         entry = next((m for m in self._catalog if m["name"] == model), None)
@@ -38,7 +40,12 @@ class Api:
         self._window.evaluate_js("window.onChatEvent(" + json.dumps(event) + ")")
 
     def send(self, text):
-        return self._session.send(text)
+        # 이전 모델을 내리는 동안 새 모델의 질문이 시작되면 두 모델이 VRAM에서 겹친다(D-6이 막으려는 상황).
+        # 전환 표시와 질문 시작이 같은 락 안이라 둘 중 하나만 성립한다: 질문이 먼저면 전환이 거절되고, 전환이 먼저면 질문이 거절된다
+        with self._state_lock:
+            if self._switching:
+                return {"ok": False, "reason": "switching"}
+            return self._session.send(text)
 
     def stop(self):
         self._session.stop()
@@ -58,11 +65,18 @@ class Api:
             previous = self._session.model
             if name == previous:
                 return {"ok": True, "unloaded": None, "info": self.info()}
-            result = self._session.configure(model=name, think=entry["thinking"])
-            if not result["ok"]:
-                return {**result, "message": "답변 중에는 바꿀 수 없다"}
-            # 이전 모델을 바로 내려 두 모델이 VRAM에 겹치지 않게 한다. 실패해도 전환은 유지하고 알린다
-            return {"ok": True, "unloaded": unload_model(self._client.host, previous), "info": self.info()}
+            with self._state_lock:
+                result = self._session.configure(model=name, think=entry["thinking"])
+                if not result["ok"]:
+                    return {**result, "message": "답변 중에는 바꿀 수 없다"}
+                self._switching = True  # 내리기가 끝날 때까지 질문을 받지 않는다
+            try:
+                # 이전 모델을 바로 내려 두 모델이 VRAM에 겹치지 않게 한다. 실패해도 전환은 유지하고 알린다
+                unloaded = unload_model(self._client.host, previous)
+            finally:
+                with self._state_lock:
+                    self._switching = False
+            return {"ok": True, "unloaded": unloaded, "info": self.info()}
 
     def set_options(self, num_ctx, temperature):
         """다음 질문부터 쓸 num_ctx·temperature를 바꾼다. 범위 밖 값과 답변 중에는 거절한다(고쳐서 받지 않는다)."""

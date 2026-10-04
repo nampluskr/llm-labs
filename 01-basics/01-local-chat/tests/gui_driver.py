@@ -216,6 +216,29 @@ def drive(window, result, scenario):
                 time.sleep(0.02)
             result["locked_while_busy"] = sorted(set(locked))
             result["after_busy"] = json.loads(js(window, "JSON.stringify({model: document.getElementById('model').disabled, numctx: document.getElementById('numctx').disabled, temp: document.getElementById('temp').disabled})"))
+        elif scenario == "switch_lock":
+            wait(window, "document.getElementById('model').disabled === false", 15)
+            probe = (
+                "JSON.stringify({model: document.getElementById('model').disabled, numctx: document.getElementById('numctx').disabled, "
+                "temp: document.getElementById('temp').disabled, send: document.getElementById('send').disabled, "
+                "status: document.getElementById('status').textContent, info: document.getElementById('info').textContent})"
+            )
+            js(window, "(function(){const el = document.getElementById('model'); el.value = 'exaone3.5:7.8b'; el.dispatchEvent(new Event('change')); return 0})()")
+            seen, end = [], time.time() + 20
+            submitted = False
+            while time.time() < end:
+                st = json.loads(js(window, probe))
+                if "바꿨습니다" in st["status"]:
+                    break
+                seen.append((st["model"], st["numctx"], st["temp"], st["send"]))
+                if not submitted and st["send"]:
+                    submit(window, "전환 중 질문")  # 잠긴 동안 보내려 해 본다
+                    submitted = True
+                time.sleep(0.05)
+            result["locked_during_switch"] = sorted(set(seen))
+            result["submitted_during_switch"] = submitted
+            result["bubbles_after_switch"] = js(window, "document.querySelectorAll('.msg').length")
+            result["after"] = json.loads(js(window, probe))
         elif scenario == "escape":
             result["first"] = ask(window, "태그")
             result["bold_elements"] = js(window, "document.querySelectorAll('.msg.assistant b').length")

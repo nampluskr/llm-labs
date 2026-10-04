@@ -28,6 +28,8 @@ class FakeOllama:
         self.requests = []
         self.unloads = []
         self.unload_status = 200  # 404 등으로 바꾸면 모델 내리기가 실패한다
+        self.unload_delay = 0.0  # 모델 내리기 응답을 늦춘다(전환 중 상태 시험)
+        self.unload_started = threading.Event()
         self.tags = None  # 모델 이름 목록. None이면 /api/tags가 404
         self.capabilities_by_model = {}
         self.show_requests = []
@@ -53,6 +55,9 @@ class FakeOllama:
                     return
                 if body.get("messages") == [] and body.get("keep_alive") == 0:
                     owner.unloads.append(body)
+                    owner.unload_started.set()
+                    if owner.unload_delay:
+                        time.sleep(owner.unload_delay)
                     if owner.unload_status != 200:
                         send_lines(self, [{"error": "model not found"}], status=owner.unload_status)
                     else:

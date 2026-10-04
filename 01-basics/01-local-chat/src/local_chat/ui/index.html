@@ -197,7 +197,8 @@
     if (id !== seq || current !== bubble) return;
     log.removeChild(bubble); log.removeChild(userEl);
     current = null; thinkEl = null; input.value = text; setBusy(false);
-    statusEl.textContent = r.reason === "busy" ? "이전 답변을 처리 중입니다." : "보내지 못했습니다. 다시 시도하세요.";
+    statusEl.textContent = r.reason === "busy" ? "이전 답변을 처리 중입니다."
+      : r.reason === "switching" ? "모델을 바꾸는 중입니다. 잠시 뒤에 다시 보내세요." : "보내지 못했습니다. 다시 시도하세요.";
   }
 
   document.getElementById("form").addEventListener("submit", (e) => { e.preventDefault(); send(); });
