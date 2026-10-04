@@ -52,7 +52,8 @@ def gb(size):
 
 
 def describe(error):
-    return f"{type(error).__name__}: {error}"
+    # 오류 응답 본문에 줄바꿈이 있어도 화면이 항목당 한 줄이 되게 공백을 한 칸으로 줄인다
+    return " ".join(f"{type(error).__name__}: {error}".split())
 
 
 def check(name, ok, detail, data=None):

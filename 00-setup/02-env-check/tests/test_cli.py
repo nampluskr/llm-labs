@@ -201,12 +201,36 @@ def test_loaded_model_without_memory_fields(monkeypatch, capsys):
 
 
 def test_text_and_json_report_same_results(monkeypatch, capsys):
-    patch_client(monkeypatch, version_response=Response({}), list_error=TypeError("boom"))
+    patch_client(
+        monkeypatch,
+        models=[model("qwen3:4b", 2_500_000_000), model("bge-m3:latest", 1_200_000_000)],
+        loaded=[model("qwen3:4b", 5_000_000_000, 5_000_000_000)],
+        version_response=Response({}),
+    )
     _, text_out, _ = run(capsys)
     _, json_out, _ = run(capsys, "--json")
     result = json.loads(json_out)
-    assert {c["name"]: c["ok"] for c in result["checks"]} == text_status(text_out)
-    assert f"({result['passed']}/{result['total']} 통과)" in text_out
+    lines = text_out.splitlines()
+    # 항목 순서·통과 여부·detail이 화면 줄과 JSON에서 같다
+    expected = [f"[{'통과' if c['ok'] else '실패'}] {c['name']}: {c['detail']}" for c in result["checks"]]
+    assert [line for line in lines if line.startswith("[")] == expected
+    # 모델 줄(이름·크기·PROCESSOR)이 JSON의 data와 같다
+    by_name = {c["name"]: c for c in result["checks"]}
+    assert [f"  {m['name']}  {cli.gb(m['size'])}" for m in by_name["받은 모델"]["data"]] == [
+        line for line in lines if line.startswith("  ") and "GPU" not in line
+    ]
+    assert [f"  {m['name']}  {cli.gb(m['size'])}  {m['processor']}" for m in by_name["적재된 모델"]["data"]] == [
+        line for line in lines if line.startswith("  ") and "GPU" in line
+    ]
+    assert lines[-1] == f"결과: 실패 ({result['passed']}/{result['total']} 통과)"
+
+
+def test_failure_detail_stays_on_one_line(monkeypatch, capsys):
+    body = "line1" + chr(10) + "line2" + chr(10) + "  line3"
+    patch_client(monkeypatch, list_error=cli.ollama.ResponseError(body, 500))
+    _, out, _ = run(capsys)
+    assert "[실패] 받은 모델: ResponseError: line1 line2 line3 (status code: 500)" in out
+    assert len([line for line in out.splitlines() if line.startswith("[")]) == 4
 
 
 def test_server_down(monkeypatch, capsys):
