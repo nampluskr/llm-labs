@@ -232,3 +232,57 @@ def test_토큰은_도착하는_대로_출력된다(fake):
         t = {s: ts for ts, s in out.writes if s in ("A", "B", "C")}
         assert set(t) == {"A", "B", "C"}, name
         assert t["C"] - t["A"] >= 0.5, f"{name}: 토큰이 몰려서 출력됐다 {t}"
+
+
+def test_오류_본문의_error가_문자열이_아니어도_예외가_새지_않는다(fake):
+    fake.script = lambda h: send_lines(h, [{"error": 42}], status=500)
+    for name, c in clients(fake.host):
+        events = collect(c)
+        assert len(events) == 1 and isinstance(events[0], Error), name
+        assert events[0].kind == "other" and events[0].message == "42", name
+
+
+def test_응답이_멈추면_읽기_타임아웃으로_Error가_난다(fake):
+    release = threading.Event()
+
+    def script(h):
+        send_lines(h, [chunk("a")])
+        release.wait(10)  # 연결을 연 채 아무것도 보내지 않는다
+
+    fake.script = script
+    try:
+        for name, cls in CLIENTS.items():
+            t0 = time.perf_counter()
+            events = list(cls(host=fake.host, read_timeout=0.5).stream(MESSAGES, model="m", options=OPTIONS))
+            assert events[0] == Token("a"), name
+            assert isinstance(events[-1], Error) and events[-1].kind == "connection", name
+            assert time.perf_counter() - t0 < 5, name
+    finally:
+        release.set()
+
+
+def test_콘솔_프로세스는_한글을_UTF8_바이트로_토큰마다_바로_내보낸다(fake):
+    """실제 프로세스·파이프로 확인한다: 출력 인코딩과 flush는 capsys로는 보이지 않는다."""
+    import os
+    import subprocess
+    import sys
+
+    fake.script = lambda h: send_lines(h, [chunk("가"), chunk("나"), chunk("다"), done_chunk(3, 1_000_000_000)], delay=0.4)
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "local_chat.console", "--client", "http", "--host", fake.host],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+    )
+    arrivals, data = [], b""
+    while True:
+        part = os.read(proc.stdout.fileno(), 4096)
+        if not part:
+            break
+        data += part
+        arrivals.append((time.perf_counter(), data))
+    assert proc.wait(10) == 0, proc.stderr.read().decode("utf-8", "replace")
+    text = data.decode("utf-8")  # 바이트가 UTF-8이 아니면 여기서 실패한다
+    assert "가나다" in text and text.count("tok/s") == 1
+    first = next(t for t, d in arrivals if "가".encode() in d)
+    last = next(t for t, d in arrivals if "다".encode() in d)
+    assert last - first >= 0.5, "토큰이 몰려서 나왔다(flush되지 않음)"

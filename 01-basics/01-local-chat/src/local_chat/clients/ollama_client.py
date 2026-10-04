@@ -3,14 +3,14 @@
 import httpx
 import ollama
 
-from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done
+from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done, make_timeout
 
 
 class OllamaClient:
     name = "ollama"
 
-    def __init__(self, host: str = "http://localhost:11434"):
-        self._client = ollama.Client(host=host)
+    def __init__(self, host: str = "http://localhost:11434", read_timeout: float = 300.0):
+        self._client = ollama.Client(host=host, timeout=make_timeout(read_timeout))
 
     def stream(self, messages: list[Message], *, model: str, options: dict):
         stream = None
@@ -25,7 +25,7 @@ class OllamaClient:
                     return
             yield Error(OTHER, "응답이 done 없이 끝났다")
         except ollama.ResponseError as e:
-            yield Error(classify(e.status_code, e.error), e.error)
+            yield Error(classify(e.status_code, e.error), str(e.error))
         except ollama.RequestError as e:
             yield Error(OTHER, str(e))
         except (ConnectionError, httpx.TransportError) as e:

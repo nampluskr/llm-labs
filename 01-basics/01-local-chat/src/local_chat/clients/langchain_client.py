@@ -9,7 +9,7 @@ import ollama
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
-from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done
+from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done, make_timeout
 
 _ROLES = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
 
@@ -17,8 +17,9 @@ _ROLES = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
 class LangchainClient:
     name = "langchain"
 
-    def __init__(self, host: str = "http://localhost:11434"):
+    def __init__(self, host: str = "http://localhost:11434", read_timeout: float = 300.0):
         self._host = host
+        self._timeout = make_timeout(read_timeout)
 
     def stream(self, messages: list[Message], *, model: str, options: dict):
         stream = None
@@ -27,6 +28,7 @@ class LangchainClient:
                 model=model,
                 base_url=self._host,
                 reasoning=False,
+                client_kwargs={"timeout": self._timeout},
             )
             # options 전체를 그대로 보낸다(다른 두 층과 같게). 생성자 필드는 options를 주면 무시된다
             stream = llm.stream([_ROLES[m["role"]](m["content"]) for m in messages], options=options)
@@ -39,7 +41,7 @@ class LangchainClient:
                     return
             yield Error(OTHER, "응답이 done 없이 끝났다")
         except ollama.ResponseError as e:
-            yield Error(classify(e.status_code, e.error), e.error)
+            yield Error(classify(e.status_code, e.error), str(e.error))
         except ollama.RequestError as e:
             yield Error(OTHER, str(e))
         except (ConnectionError, httpx.TransportError) as e:

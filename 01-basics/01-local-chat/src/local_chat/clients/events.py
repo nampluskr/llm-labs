@@ -9,6 +9,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
+import httpx
+
 Message = dict[str, str]  # {"role": "system"|"user"|"assistant", "content": str}
 
 CONNECTION = "connection"
@@ -58,6 +60,12 @@ def make_done(eval_count, eval_duration) -> Done:
 
 def classify(status: int | None, message: str) -> str:
     """HTTP 상태·오류 문구로 Error.kind를 정한다. 세 층이 같은 규칙을 쓴다."""
+    message = str(message)  # 서버가 문자열이 아닌 error 값을 보내도 예외가 새지 않게
     if status == 404 or "not found" in message.lower():
         return MODEL_NOT_FOUND
     return OTHER
+
+
+def make_timeout(read_seconds: float) -> httpx.Timeout:
+    """연결은 10초, 응답 대기는 read_seconds(큰 모델 적재를 기다릴 수 있게 길게). 세 층이 같은 값을 쓴다."""
+    return httpx.Timeout(10.0, read=read_seconds)

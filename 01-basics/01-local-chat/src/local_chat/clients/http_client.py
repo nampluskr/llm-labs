@@ -4,21 +4,20 @@ import json
 
 import httpx
 
-from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done
-
-TIMEOUT = httpx.Timeout(10.0, read=300.0)  # 큰 모델 적재를 기다릴 수 있게 읽기는 길게
+from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done, make_timeout
 
 
 class HttpClient:
     name = "http"
 
-    def __init__(self, host: str = "http://localhost:11434"):
+    def __init__(self, host: str = "http://localhost:11434", read_timeout: float = 300.0):
         self._host = host.rstrip("/")
+        self._timeout = make_timeout(read_timeout)
 
     def stream(self, messages: list[Message], *, model: str, options: dict):
         body = {"model": model, "messages": messages, "stream": True, "think": False, "options": options}
         try:
-            with httpx.stream("POST", f"{self._host}/api/chat", json=body, timeout=TIMEOUT) as r:
+            with httpx.stream("POST", f"{self._host}/api/chat", json=body, timeout=self._timeout) as r:
                 if r.status_code >= 400:
                     r.read()
                     msg = _error_text(r)
