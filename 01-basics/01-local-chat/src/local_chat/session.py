@@ -25,6 +25,7 @@ emit하는 이벤트(dict):
 """
 
 import threading
+import time
 
 from .clients import Done, Error, Thinking, Token
 from .defaults import SYSTEM_PROMPT
@@ -54,6 +55,7 @@ class ChatSession:
         self._idle = threading.Event()  # 질문을 처리 중이 아니면(종료 이벤트 emit까지 끝났으면) 켜져 있다
         self._idle.set()
         self._closed = False
+        self._workers: set[threading.Thread] = set()  # 아직 끝나지 않은 작업 스레드(중단된 턴의 것 포함)
 
     @property
     def turn_count(self) -> int:
@@ -104,7 +106,9 @@ class ChatSession:
             self._idle.clear()
             turn = self._turn = _Turn(text, self._model, dict(self._options), self._think)
             messages = self.messages_for(text)  # 문맥은 보내는 순간에 확정한다
-        threading.Thread(target=self._run, args=(turn, messages), daemon=True).start()
+            worker = threading.Thread(target=self._run, args=(turn, messages), daemon=True)
+            self._workers.add(worker)
+        worker.start()
         return {"ok": True}
 
     def stop(self) -> None:
@@ -123,6 +127,20 @@ class ChatSession:
         """창이 닫힐 때: 중단하고 새 질문을 받지 않는다."""
         self._closed = True
         self.stop()
+
+    def wait_workers(self, timeout: float) -> bool:
+        """중단된 턴의 작업 스레드까지 모두 끝나기를 기다린다. 시간 안에 끝나면 True.
+        stop()은 작업 스레드를 기다리지 않고 busy를 풀므로, 모델을 내리기 전에 이전 요청이 끝났는지 확인하는 데 쓴다."""
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                pending = [w for w in self._workers if w is not threading.current_thread()]
+            if not pending:
+                return True
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            pending[0].join(left)
 
     def join(self, timeout: float | None = None) -> bool:
         """처리 중인 질문이 종료 이벤트 emit까지 끝나기를 기다린다. 시간 안에 끝나면 True."""
@@ -162,11 +180,19 @@ class ChatSession:
         return True
 
     def _run(self, turn: _Turn, messages: list[dict]) -> None:
+        try:
+            self._run_turn(turn, messages)
+        finally:
+            with self._lock:
+                self._workers.discard(threading.current_thread())
+
+    def _run_turn(self, turn: _Turn, messages: list[dict]) -> None:
         final: dict | None = None
         gen = None
         try:
-            gen = self._client.stream(messages, model=turn.model, options=turn.options, think=turn.think)
-            for event in gen:
+            # 이미 중단된 턴은 요청을 시작하지 않는다(중단 뒤 모델을 내렸는데 이 요청이 뒤늦게 그 모델을 다시 올리지 않게)
+            gen = None if turn.cancelled.is_set() else self._client.stream(messages, model=turn.model, options=turn.options, think=turn.think)
+            for event in (gen if gen is not None else ()):
                 if turn.cancelled.is_set():
                     break
                 if isinstance(event, Thinking):

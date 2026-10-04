@@ -348,8 +348,11 @@ def test_중단해도_답에는_화면에_전달된_토큰만_남는다():
 
         session = ChatSession(client, "m", OPTIONS, emit)
         session.send("q")
-        threading.Timer(rng.uniform(0, 0.012), session.stop).start()
+        timer = threading.Timer(rng.uniform(0, 0.012), session.stop)
+        timer.start()
         assert session.join(10)
+        timer.cancel()  # 첫 턴이 타이머보다 먼저 끝났다면, 늦게 발동한 stop()이 다음 턴을 중단시키지 않게 정리한다
+        timer.join()
         terminals = [e["type"] for e in events if e["type"] != "token"]
         assert len(terminals) == 1 and events[-1]["type"] == terminals[0]
         delivered = "".join(e["text"] for e in events if e["type"] == "token")
@@ -601,3 +604,44 @@ def test_options는_바깥에서_고쳐도_세션에_영향이_없다():
     options["num_ctx"] = 99999
     session.options["num_ctx"] = 99999
     assert session.options == {"num_ctx": 4096, "temperature": 0.7}
+
+
+def test_이미_중단된_턴은_호출_층_요청을_시작하지_않는다():
+    """중단 뒤 모델을 내렸는데 이 요청이 뒤늦게 시작돼 그 모델을 다시 올리면 안 된다(작업 스레드가 아직 stream()을 부르기 전에 중단된 경우)."""
+    from local_chat.session import _Turn
+
+    client = ScriptedClient(echo)
+    events = []
+    session = ChatSession(client, "m", OPTIONS, events.append)
+    turn = _Turn("q", "m", dict(OPTIONS), False)
+    turn.cancelled.set()
+    session._busy = True
+    session._turn = turn
+    session._idle.clear()
+    worker = threading.Thread(target=session._run, args=(turn, session.messages_for("q")))
+    session._workers.add(worker)
+    worker.start()
+    worker.join(5)
+    assert client.calls == [] and events == []  # 요청이 가지 않았고, 취소된 턴의 이벤트는 버려졌다
+    assert session.join(2) and session.send("다음") == {"ok": True}  # busy도 풀렸다
+    session.join(5)
+    assert len(client.calls) == 1
+
+
+def test_wait_workers는_중단된_턴의_작업_스레드가_끝나기를_기다린다():
+    gate = threading.Event()
+
+    def slow(text):
+        yield Token("a")
+        gate.wait(5)
+        yield Done(1, 1)
+
+    session, events = make(ScriptedClient(slow))
+    session.send("q")
+    time.sleep(0.1)
+    session.stop()
+    assert session.join(2)  # busy는 바로 풀린다
+    assert session.wait_workers(0.2) is False  # 작업 스레드는 아직 막혀 있다
+    threading.Timer(0.3, gate.set).start()
+    assert session.wait_workers(5) is True
+    assert session.wait_workers(0) is True  # 더 기다릴 스레드가 없다

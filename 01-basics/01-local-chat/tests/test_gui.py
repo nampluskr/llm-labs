@@ -253,3 +253,16 @@ def test_창은_모델_전환_중에_보내기와_설정_입력을_잠그고_그
     assert r["bubbles_after_switch"] == 0 and fake.requests == []  # 잠긴 사이 보내려 한 질문은 말풍선도 요청도 만들지 않았다
     assert r["after"]["model"] is False and r["after"]["send"] is False  # 끝나면 풀린다
     assert "exaone3.5:7.8b" in r["after"]["info"] and len(fake.unloads) == 1
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_전환_응답이_끊겨도_서버가_실제로_쓰는_모델로_화면을_맞춘다(fake, name):
+    fake.tags = ["qwen3:8b", "exaone3.5:7.8b"]
+    fake.capabilities_by_model = {"qwen3:8b": ["completion", "thinking"], "exaone3.5:7.8b": ["completion"]}
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    r = run_driver(name, fake.host, "switch_lost")
+    assert "driver_error" not in r, r
+    # 서버에서는 전환됐으므로 화면(드롭다운·헤더)도 새 모델이어야 한다. 이전 모델로 되돌리면 다음 질문이 화면과 다른 모델로 간다
+    assert r["after"]["model"] == "exaone3.5:7.8b" and "exaone3.5:7.8b" in r["after"]["info"] and "사고 과정 없음" in r["after"]["info"]
+    assert r["after"]["send"] is False
+    assert fake.requests[-1]["model"] == "exaone3.5:7.8b" and r["ask"]["status"] == "1토큰 · 1.0 tok/s"

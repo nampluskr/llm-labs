@@ -2,7 +2,7 @@ import socket
 import time
 
 from fake_ollama import send_headers
-from local_chat.models import list_models, unload_model
+from local_chat.models import FAILED, NOT_INSTALLED, UNLOADED, list_models, unload_model
 
 
 def test_tags의_모든_모델을_chat_thinking_여부와_함께_돌려준다(fake):
@@ -19,10 +19,11 @@ def test_tags의_모든_모델을_chat_thinking_여부와_함께_돌려준다(fa
     ]
 
 
-def test_모델_능력을_알_수_없으면_채팅_가능_사고_없음으로_둔다(fake):
+def test_모델_능력을_알_수_없으면_chat은_None으로_둔다(fake):
     fake.tags = ["a"]
     fake.capabilities_by_model = {"a": "이상한 값"}
-    assert list_models(fake.host) == [{"name": "a", "chat": True, "thinking": False}]
+    # 확인하지 못했다고 채팅 가능으로 가정하면 임베딩 모델을 고를 수 있게 된다. 고르는 순간 다시 확인한다
+    assert list_models(fake.host) == [{"name": "a", "chat": None, "thinking": False}]
 
 
 def test_목록을_못_받으면_빈_리스트(fake):
@@ -51,19 +52,50 @@ def test_응답을_조금씩_흘려도_전체_시간_안에_포기한다(fake):
     t0 = time.perf_counter()
     models = list_models(fake.host, timeout=1.5)
     assert time.perf_counter() - t0 < 4
-    assert models == [{"name": "a", "chat": True, "thinking": False}]  # 목록은 유지하고 능력만 모름으로 둔다
+    assert models == [{"name": "a", "chat": None, "thinking": False}]  # 목록은 유지하고 능력만 모름으로 둔다
 
 
-def test_모델_내리기는_빈_messages와_keep_alive_0을_보낸다(fake):
-    assert unload_model(fake.host, "qwen3:8b") is True
+def test_모델_내리기는_빈_messages와_keep_alive_0을_보내고_성공하면_unloaded(fake):
+    assert unload_model(fake.host, "qwen3:8b") == UNLOADED
     assert fake.unloads == [{"model": "qwen3:8b", "messages": [], "keep_alive": 0, "stream": False}]
     assert fake.requests == []  # 일반 채팅 요청으로 세지 않는다
 
 
-def test_모델_내리기가_실패하면_False(fake):
+def test_설치돼_있지_않은_모델은_not_installed(fake):
     fake.unload_status = 404
-    assert unload_model(fake.host, "nope") is False
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    assert unload_model(f"http://127.0.0.1:{port}", "m", timeout=1) is False
+    assert unload_model(fake.host, "nope") == NOT_INSTALLED
+
+
+def test_서버_오류_이상한_본문_서버_없음은_failed(fake):
+    fake.unload_status = 500
+    assert unload_model(fake.host, "m") == FAILED
+    fake.unload_status = 200
+    for body in ({"error": "unload failed"}, {"model": "m"}, {"done": False}, ["done"], 5):
+        fake.unload_body = body
+        assert unload_model(fake.host, "m") == FAILED, body  # HTTP 200이어도 본문이 성공이 아니면 실패다
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    assert unload_model(f"http://127.0.0.1:{port}", "m", timeout=1) == FAILED
+
+
+def test_헤더를_조금씩_흘리는_응답도_전체_시간_안에_포기한다(fake):
+    """연산별 timeout은 헤더 trickle을 못 끊는다. /api/tags, /api/show, 모델 내리기 모두 전체 시간으로 끊어야 한다."""
+    from fake_ollama import trickle_headers
+
+    fake.tags = ["a"]
+    fake.get_script = lambda h: trickle_headers(h)
+    t0 = time.perf_counter()
+    assert list_models(fake.host, timeout=1.0) == []
+    assert time.perf_counter() - t0 < 3
+
+    fake.get_script = None
+    fake.show_script = lambda h: trickle_headers(h)
+    t0 = time.perf_counter()
+    assert list_models(fake.host, timeout=1.5) == [{"name": "a", "chat": None, "thinking": False}]
+    assert time.perf_counter() - t0 < 4
+
+    fake.unload_script = lambda h: trickle_headers(h)
+    t0 = time.perf_counter()
+    assert unload_model(fake.host, "a", timeout=1.0) == FAILED
+    assert time.perf_counter() - t0 < 3

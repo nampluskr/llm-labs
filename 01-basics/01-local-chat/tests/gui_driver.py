@@ -239,6 +239,14 @@ def drive(window, result, scenario):
             result["submitted_during_switch"] = submitted
             result["bubbles_after_switch"] = js(window, "document.querySelectorAll('.msg').length")
             result["after"] = json.loads(js(window, probe))
+        elif scenario == "switch_lost":
+            wait(window, "document.getElementById('model').disabled === false", 15)
+            # 서버에서는 전환이 성공하지만 응답이 화면에 도착하지 못한 것처럼 만든다
+            js(window, "window.__setModel = window.pywebview.api.set_model; window.pywebview.api.set_model = async (n) => { await window.__setModel(n); throw new Error('lost'); }; 0")
+            js(window, "(function(){const el = document.getElementById('model'); el.value = 'exaone3.5:7.8b'; el.dispatchEvent(new Event('change')); return 0})()")
+            wait(window, "document.getElementById('model').disabled === false && document.getElementById('status').textContent.length > 0", 15)
+            result["after"] = json.loads(js(window, "JSON.stringify({model: document.getElementById('model').value, info: document.getElementById('info').textContent, status: document.getElementById('status').textContent, send: document.getElementById('send').disabled})"))
+            result["ask"] = ask(window, "질문")
         elif scenario == "escape":
             result["first"] = ask(window, "태그")
             result["bold_elements"] = js(window, "document.querySelectorAll('.msg.assistant b').length")

@@ -30,6 +30,10 @@ class FakeOllama:
         self.unload_status = 200  # 404 등으로 바꾸면 모델 내리기가 실패한다
         self.unload_delay = 0.0  # 모델 내리기 응답을 늦춘다(전환 중 상태 시험)
         self.unload_started = threading.Event()
+        self.unload_time = None  # 내리기 요청이 서버에 도착한 시각(time.perf_counter)
+        self.unload_body = None  # 주면 HTTP 200으로 이 JSON을 돌려준다(오류 본문 시험)
+        self.unload_script = None  # 주면 내리기 응답을 직접 쓴다(헤더 trickle 시험)
+        self.get_script = None  # 주면 GET 응답을 직접 쓴다(/api/tags 느린 응답 시험)
         self.tags = None  # 모델 이름 목록. None이면 /api/tags가 404
         self.capabilities_by_model = {}
         self.show_requests = []
@@ -55,9 +59,16 @@ class FakeOllama:
                     return
                 if body.get("messages") == [] and body.get("keep_alive") == 0:
                     owner.unloads.append(body)
+                    owner.unload_time = time.perf_counter()
                     owner.unload_started.set()
+                    if owner.unload_script is not None:
+                        owner.unload_script(self)
+                        return
                     if owner.unload_delay:
                         time.sleep(owner.unload_delay)
+                    if owner.unload_body is not None:
+                        send_lines(self, [owner.unload_body])
+                        return
                     if owner.unload_status != 200:
                         send_lines(self, [{"error": "model not found"}], status=owner.unload_status)
                     else:
@@ -67,6 +78,9 @@ class FakeOllama:
                 owner.script(self)
 
             def do_GET(self):
+                if owner.get_script is not None:
+                    owner.get_script(self)
+                    return
                 if self.path == "/api/tags" and owner.tags is not None:
                     send_lines(self, [{"models": [{"name": n, "model": n} for n in owner.tags]}])
                 else:
@@ -95,6 +109,19 @@ def send_body(handler, lines, delay=0.0):
         handler.wfile.flush()
         if delay:
             time.sleep(delay)
+
+
+def trickle_headers(handler, seconds=10.0, interval=0.25):
+    """응답 헤더를 끝내지 않고 조금씩 흘린다. httpx의 연산별 timeout만으로는 끝나지 않는 응답이다."""
+    try:
+        handler.wfile.write(b"HTTP/1.1 200 OK\r\n")
+        end = time.time() + seconds
+        while time.time() < end:
+            handler.wfile.write(b"X-Slow: 1\r\n")
+            handler.wfile.flush()
+            time.sleep(interval)
+    except OSError:
+        pass
 
 
 def send_lines(handler, lines, status=200, delay=0.0):

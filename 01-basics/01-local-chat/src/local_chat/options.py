@@ -7,7 +7,12 @@ TEMPERATURE_RANGE = (0.0, 2.0)
 
 
 def _is_number(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:  # float으로 바꿀 수 없을 만큼 큰 정수
+        return False
 
 
 def validate_options(num_ctx, temperature) -> dict:

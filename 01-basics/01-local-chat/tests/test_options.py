@@ -12,13 +12,13 @@ def test_범위_안의_값은_그대로_받는다():
     assert validate_options(5120.0, 1.5) == {"num_ctx": 5120, "temperature": 1.5}  # 정수로 떨어지는 실수는 정수로
 
 
-@pytest.mark.parametrize("num_ctx", [4095, 8193, 0, -1, 32768, 4096.5, "4096", None, True, math.nan, math.inf, [4096]])
+@pytest.mark.parametrize("num_ctx", [10**400, -(10**400), 4095, 8193, 0, -1, 32768, 4096.5, "4096", None, True, math.nan, math.inf, [4096]])
 def test_num_ctx가_범위_밖이거나_정수가_아니면_거절한다(num_ctx):
     with pytest.raises(ValueError, match="num_ctx"):
         validate_options(num_ctx, 0.7)
 
 
-@pytest.mark.parametrize("temperature", [-0.1, 2.1, 100, "0.7", None, True, math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize("temperature", [10**400, -(10**400), -0.1, 2.1, 100, "0.7", None, True, math.nan, math.inf, -math.inf])
 def test_temperature가_범위_밖이거나_숫자가_아니면_거절한다(temperature):
     with pytest.raises(ValueError, match="temperature"):
         validate_options(4096, temperature)

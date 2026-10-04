@@ -1,10 +1,12 @@
 """모델이 지원하는 기능을 Ollama에 물어본다(/api/show의 capabilities).
 
 이 모듈은 창을 여는 경로와 사용자의 조작 경로에서 불리므로 모든 호출의 전체 시간을 제한한다.
-httpx의 timeout은 무응답 시간만 재서, 응답을 조금씩 흘려 보내면 끝나지 않을 수 있다.
-읽는 동안 마감 시각과 크기를 직접 확인한다."""
+httpx의 timeout은 연산 하나(연결·헤더 한 번 읽기·본문 한 조각 읽기)의 무응답 시간만 재서, 헤더나 본문을
+조금씩 흘려 보내면 끝나지 않을 수 있다. 그래서 요청을 작업 스레드에서 돌리고 바깥에서 전체 시간을 재며,
+넘으면 클라이언트를 닫아 막힌 소켓을 풀어 준다."""
 
 import json
+import threading
 import time
 
 import httpx
@@ -14,17 +16,35 @@ MAX_BODY = 1_000_000  # 응답이 이보다 크면 메타 조회로 보지 않�
 
 def fetch_json(method: str, url: str, body: dict | None = None, timeout: float = 5.0):
     """전체 시간(timeout)과 크기(MAX_BODY) 안에서 JSON을 읽어 돌려준다. 실패하면 httpx.HTTPError나 ValueError."""
-    deadline = time.monotonic() + timeout
-    with httpx.stream(method, url, json=body, timeout=timeout) as r:
-        r.raise_for_status()
-        data = bytearray()
-        for part in r.iter_bytes():
-            data += part
-            if time.monotonic() > deadline:
-                raise httpx.ReadTimeout("전체 시간 제한을 넘었다")
-            if len(data) > MAX_BODY:
-                raise ValueError("응답이 너무 크다")
-    return json.loads(bytes(data))
+    client = httpx.Client(timeout=timeout)
+    box: dict = {}
+
+    def work():
+        try:
+            deadline = time.monotonic() + timeout
+            with client.stream(method, url, json=body) as r:
+                r.raise_for_status()
+                data = bytearray()
+                for part in r.iter_bytes():
+                    data += part
+                    if time.monotonic() > deadline:
+                        raise httpx.ReadTimeout("전체 시간 제한을 넘었다")
+                    if len(data) > MAX_BODY:
+                        raise ValueError("응답이 너무 크다")
+            box["value"] = json.loads(bytes(data))
+        except Exception as e:  # 호출한 쪽으로 넘긴다
+            box["error"] = e
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():  # 헤더를 조금씩 흘리는 등 연산 하나가 끝나지 않는 경우
+        client.close()  # 막힌 소켓을 닫아 작업 스레드를 풀어 준다
+        raise httpx.ReadTimeout("전체 시간 제한을 넘었다")
+    client.close()
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 def show_capabilities(host: str, model: str, timeout: float = 5.0) -> list[str] | None:

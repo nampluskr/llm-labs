@@ -224,8 +224,9 @@
     for (const m of data.models) {
       const opt = document.createElement("option");
       opt.value = m.name;
-      opt.textContent = m.chat ? m.name : m.name + " (채팅 불가 · 임베딩)";   // 목록에는 모두 보이되 채팅 못 하는 모델은 고를 수 없다
-      opt.disabled = !m.chat;
+      // 목록에는 모두 보이되 채팅 못 하는 모델은 고를 수 없다. 확인하지 못한 모델(null)은 고르는 순간 서버가 다시 확인한다
+      opt.textContent = m.chat === false ? m.name + " (채팅 불가 · 임베딩)" : m.chat === null ? m.name + " (확인 안 됨)" : m.name;
+      opt.disabled = m.chat === false;
       modelSel.appendChild(opt);
     }
   }
@@ -242,7 +243,12 @@
       renderInfo(r.info);
       statusEl.textContent = okMessage ? okMessage(r) : "";
     } else {
-      renderInfo(shown);   // 거절되면 화면의 값을 되돌린다
+      // 거절되거나 응답이 오지 않았다. 서버가 실제로 쓰는 값을 다시 읽어 화면을 맞춘다(응답만 잃고 서버에서는 바뀌었을 수 있다)
+      try {
+        renderInfo(await window.pywebview.api.info());
+      } catch (e) {
+        renderInfo(shown);
+      }
       statusEl.textContent = r.message || "적용하지 못했습니다.";
     }
     setLocked(false);
