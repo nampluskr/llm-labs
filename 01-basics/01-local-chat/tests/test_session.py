@@ -246,3 +246,80 @@ def test_실제_호출층으로도_12턴_뒤_요청에_직전_10턴만_실린다
     assert contents[1] == "q3" and contents[-1] == "q13" and contents[-2] == "답변"
     assert [e["type"] for e in events[:3]] == ["token", "token", "done"]
     assert events[-1] == {"type": "done", "eval_count": 2, "tok_s": 2.0}
+
+
+def test_막힌_상태에서도_중단은_즉시_stopped를_내고_다음_질문을_받는다():
+    gate = threading.Event()
+
+    def stuck(text):
+        yield Token("가")
+        gate.wait(10)  # 서버가 멈춘 것처럼 다음 이벤트가 오지 않는다
+        yield Token("늦음")
+        yield Done(2, 1)
+
+    client = ScriptedClient(lambda t: stuck(t) if t == "막힘" else echo(t))
+    events = []
+    got_first = threading.Event()
+
+    def emit(ev):
+        events.append(ev)
+        if ev["type"] == "token":
+            got_first.set()
+
+    session = ChatSession(client, "m", OPTIONS, emit)
+    assert session.send("막힘") == {"ok": True}
+    assert got_first.wait(5)
+    t0 = time.perf_counter()
+    session.stop()
+    assert time.perf_counter() - t0 < 1  # 막힌 읽기를 기다리지 않는다
+    assert events[-1] == {"type": "stopped"}
+    assert session.join(1)  # 종료 이벤트까지 끝난 상태
+    assert session.turn_count == 1  # 받은 "가"까지 남았다
+    assert session.send("다음") == {"ok": True}  # 막힌 작업 스레드가 남아 있어도 새 질문을 받는다
+    session.join(10)
+    assert {"role": "assistant", "content": "가"} in client.calls[-1]
+
+    before = len(events)
+    gate.set()  # 막혀 있던 옛 스레드가 깨어난다
+    assert client.closed.wait(5)
+    time.sleep(0.2)
+    assert {"type": "token", "text": "늦음"} not in events[before - 1:]  # 옛 턴의 이벤트는 버려진다
+    assert sum(e["type"] == "stopped" for e in events) == 1
+
+
+def test_진행_중이_아닐_때_중단은_아무_일도_없고_두_번_눌러도_stopped는_하나다():
+    session, events = make(ScriptedClient(echo))
+    session.stop()
+    assert events == []
+    gate = threading.Event()
+
+    def slow(text):
+        yield Token("a")
+        gate.wait(5)
+        yield Done(1, 1)
+
+    session, events = make(ScriptedClient(slow))
+    session.send("q")
+    time.sleep(0.1)
+    session.stop()
+    session.stop()
+    gate.set()
+    session.join(5)
+    assert [e["type"] for e in events].count("stopped") == 1
+
+
+def test_창을_닫으면_중단하고_새_질문을_받지_않는다():
+    gate = threading.Event()
+
+    def slow(text):
+        yield Token("a")
+        gate.wait(5)
+        yield Done(1, 1)
+
+    session, events = make(ScriptedClient(slow))
+    session.send("q")
+    time.sleep(0.1)
+    session.close()
+    gate.set()
+    assert events[-1] == {"type": "stopped"}
+    assert session.send("q2") == {"ok": False, "reason": "busy"}

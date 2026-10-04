@@ -3,6 +3,7 @@
 import json
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -49,3 +50,51 @@ def test_창에서_모델이_없으면_오류가_표시되고_다시_질문할_�
     assert "not found" in r["first"]["final"]
     assert tuple(r["first"]["buttons"][-1]) == (False, True)
     assert r["messages"] == 4  # 실패 뒤에도 두 번째 질문을 보낼 수 있었다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창에서_중단_버튼은_서버가_멈춰도_바로_먹고_다음_질문이_나간다(fake, name):
+    release = threading.Event()
+    calls = []
+
+    def script(h):
+        calls.append(1)
+        send_lines(h, [chunk("가")])
+        if len(calls) == 1:
+            release.wait(30)  # 첫 요청은 토큰 하나 뒤 응답이 멈춘다
+        else:
+            send_lines(h, [chunk("나"), done_chunk(1, 1_000_000_000)])
+
+    fake.script = script
+    try:
+        r = run_driver(name, fake.host, "stop")
+    finally:
+        release.set()
+    assert "driver_error" not in r, r
+    assert r["got_token"] and r["before"] == {"send": True, "stop": False}  # 답변 중: 보내기 막힘, 중단 켜짐
+    assert r["stopped"] and r["stop_seconds"] < 3, r  # 막힌 읽기(타임아웃 300초)를 기다리지 않았다
+    assert r["after"] == {"send": False, "stop": True, "status": "중단했습니다"}
+    assert r["next"]["status"] is not None and r["messages"] == 4
+    # 중단된 턴의 받은 부분("가")이 두 번째 요청의 문맥에 있다
+    contents = [m["content"] for m in fake.requests[1]["messages"]]
+    assert contents[1:] == ["멈출 질문", "가", "다음 질문"]
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창에서_12번_이어_질문해도_요청에는_직전_10턴만_실린다(fake, name):
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    r = run_driver(name, fake.host, "many")
+    assert "driver_error" not in r, r
+    assert all(st and "tok/s" in st for st in r["statuses"]), r["statuses"]
+    assert len(fake.requests) == 12
+    contents = [m["content"] for m in fake.requests[-1]["messages"]]
+    assert len(contents) == 22 and contents[1] == "질문2" and contents[-1] == "질문12"  # 12번째 요청: 질문1 턴이 빠졌다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_모델_출력의_HTML을_해석하지_않고_글자_그대로_보인다(fake, name):
+    fake.script = lambda h: send_lines(h, [chunk("<b>굵게</b>"), done_chunk(1, 1_000_000_000)])
+    r = run_driver(name, fake.host, "escape")
+    assert "driver_error" not in r, r
+    assert r["first"]["final"] == "<b>굵게</b>"
+    assert r["bold_elements"] == 0

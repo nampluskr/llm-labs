@@ -45,7 +45,7 @@ def build(client, model=DEFAULT_MODEL, options=None, width=820, height=720):
     api = Api(client, model, dict(options or DEFAULT_OPTIONS))
     window = webview.create_window(f"local-chat · {client.name}", url=str(INDEX), js_api=api, width=width, height=height)
     api._window = window
-    window.events.closed += api._session.stop  # 창을 닫으면 스트리밍 중단
+    window.events.closed += api._session.close  # 창을 닫으면 스트리밍 중단
     return window, api
 
 
