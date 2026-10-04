@@ -11,15 +11,34 @@
 
 ## 설치
 
-<!-- 버전 마감 때 갱신한다. 실제로 되는 것만 적는다. -->
+`docs/refs/02-ollama-install-guide.md`를 보고 PowerShell에서 한 줄씩 직접 실행한다.
+
+```powershell
+winget install --id Ollama.Ollama --exact
+```
+
+설치가 끝나면 새 PowerShell을 열고 `ollama --version`이 `0.35.1` 이상인지 확인한다. 이 PC에서
+v0.1 마감 때 확인한 버전은 0.35.1이다. 연습용 모델은 `ollama pull <모델>`로 받는다
+(`qwen3:4b`, `qwen3:8b`, `exaone3.5:7.8b`, `bge-m3`, `gemma3:12b`, `qwen3:14b`, `qwen3:30b`).
 
 ## 사용법
 
-<!-- 버전 마감 때 갱신한다. 실제로 동작하는 것만 적는다. -->
+```powershell
+ollama list     # 받은 모델 목록
+ollama ps       # 메모리에 올라간 모델과 PROCESSOR(GPU/CPU 비율)
+ollama run qwen3:4b "한 문장으로 자기소개 해줘"
+```
+
+- 서버는 `http://127.0.0.1:11434`에서 응답한다. `/api/generate`와 `/api/tags`를 확인했다.
+- `qwen3:4b`는 적재해서 `100% GPU`(VRAM 5043 MiB, 약 72.9 tok/s)를 확인했다. 나머지 6개 모델은
+  받기만 했고 적재·PROCESSOR는 확인하지 않았다(02-01 model-bench에서 잰다).
+- 결과 기록은 `docs/refs/02-ollama-install-guide.md` 끝의 기록표에 있다.
 
 ## 요구 환경
 
-<!-- 버전 마감 때 갱신한다. -->
+- Windows 11, NVIDIA GTX 1080 Ti(VRAM 11GB), 드라이버 570 이상(확인값 572.70)
+- C: 여유 30GB 이상(모델 7개는 약 50GB)
+- winget
 
 ---
 

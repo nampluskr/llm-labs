@@ -360,16 +360,16 @@ Remove-Item -Recurse "$env:LOCALAPPDATA\Ollama"
 
 | 항목 | 값 |
 | --- | --- |
-| 설치 날짜 | |
-| 설치 방법 (winget / 설치 파일) | |
-| `ollama --version` | |
-| 받기 전 VRAM (4-1) | MiB |
-| `qwen3:4b` 실행 중 VRAM (4-5) | MiB |
-| `qwen3:4b` PROCESSOR (4-4) | |
-| `qwen3:4b` 초당 생성 토큰 (6-1) | tok/s |
-| 로그 오류 (5단계) | 없음 / 내용 |
-| 추가 모델별 PROCESSOR (7단계) | |
-| 막힌 곳과 해결 방법 | |
+| 설치 날짜 | 2026-10-04 |
+| 설치 방법 (winget / 설치 파일) | winget |
+| `ollama --version` | 0.35.1 |
+| 받기 전 VRAM (4-1) | 1839 MiB (모델 적재 전 측정) |
+| `qwen3:4b` 실행 중 VRAM (4-5) | 5043 MiB |
+| `qwen3:4b` PROCESSOR (4-4) | 100% GPU |
+| `qwen3:4b` 초당 생성 토큰 (6-1) | 72.9 tok/s |
+| 로그 오류 (5단계) | 없음 |
+| 추가 모델별 PROCESSOR (7단계) | 미측정 (적재 테스트 생략) |
+| 막힌 곳과 해결 방법 | 없음 |
 
 ---
 
