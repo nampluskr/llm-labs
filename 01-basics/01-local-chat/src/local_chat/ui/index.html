@@ -45,7 +45,7 @@
 <div id="status"></div>
 <form id="form">
   <textarea id="input" placeholder="질문을 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)" autofocus></textarea>
-  <button id="send" type="submit">보내기</button>
+  <button id="send" type="submit" disabled>보내기</button>
   <button id="stop" type="button" disabled>중단</button>
 </form>
 <script>
@@ -56,6 +56,7 @@
   const statusEl = document.getElementById("status");
   let current = null;   // 지금 채워지는 답변 말풍선
   let busy = false;
+  let ready = false;   // pywebview 브리지가 준비되면 true. 그 전에는 보내지 않는다
 
   function setBusy(b) {
     busy = b;
@@ -100,18 +101,32 @@
     input.focus();
   }
 
+  function bridgeReady() {
+    return !!(window.pywebview && window.pywebview.api);
+  }
+
   async function send() {
     const text = input.value.trim();
     if (!text || busy) return;
+    if (!ready || !bridgeReady()) {
+      statusEl.textContent = "준비 중입니다. 잠시 뒤에 다시 보내세요.";
+      return;
+    }
     setBusy(true);
     statusEl.textContent = "";
     addMsg("user", text);
     current = addMsg("assistant", "");
     input.value = "";
-    const r = await window.pywebview.api.send(text);
-    if (!r.ok) {   // 파이썬이 거절하면 방금 만든 말풍선을 되돌린다
+    let r;
+    try {
+      r = await window.pywebview.api.send(text);
+    } catch (e) {   // 브리지 호출이 실패하면 어떤 요청도 시작되지 않았다
+      r = { ok: false, reason: "bridge" };
+    }
+    if (!r.ok) {   // 거절되거나 실패하면 방금 만든 말풍선을 되돌리고 입력을 복구한다
       log.removeChild(current); log.removeChild(log.lastElementChild);
-      current = null; input.value = text; setBusy(r.reason === "busy");
+      current = null; input.value = text; setBusy(false);
+      statusEl.textContent = r.reason === "busy" ? "이전 답변을 처리 중입니다." : "보내지 못했습니다. 다시 시도하세요.";
     }
   }
 
@@ -119,13 +134,18 @@
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
-  stopBtn.addEventListener("click", () => window.pywebview.api.stop());
+  stopBtn.addEventListener("click", () => { if (bridgeReady()) window.pywebview.api.stop(); });
 
-  window.addEventListener("pywebviewready", async () => {
+  async function init() {
+    if (ready || !bridgeReady()) return;
     const info = await window.pywebview.api.info();
     document.getElementById("title").textContent = "local-chat · " + info.client;
     document.getElementById("info").textContent = info.model + " · num_ctx " + info.num_ctx + " · temperature " + info.temperature;
-  });
+    ready = true;
+    setBusy(false);   // 보내기 버튼을 연다
+  }
+  window.addEventListener("pywebviewready", init);
+  init();   // 이벤트가 이미 지나갔을 때를 대비한다
 </script>
 </body>
 </html>

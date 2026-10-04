@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from fake_ollama import chunk, done_chunk, send_lines
+from fake_ollama import chunk, done_chunk, send_body, send_headers, send_lines
 from local_chat.clients import CLIENTS
 
 
@@ -59,8 +59,9 @@ def test_창에서_중단_버튼은_서버가_멈춰도_바로_먹고_다음_질
 
     def script(h):
         calls.append(1)
-        send_lines(h, [chunk("가")])
         if len(calls) == 1:
+            send_headers(h)
+            send_body(h, [chunk("가")])
             release.wait(30)  # 첫 요청은 토큰 하나 뒤 응답이 멈춘다
         else:
             send_lines(h, [chunk("나"), done_chunk(1, 1_000_000_000)])
@@ -74,7 +75,7 @@ def test_창에서_중단_버튼은_서버가_멈춰도_바로_먹고_다음_질
     assert r["got_token"] and r["before"] == {"send": True, "stop": False}  # 답변 중: 보내기 막힘, 중단 켜짐
     assert r["stopped"] and r["stop_seconds"] < 3, r  # 막힌 읽기(타임아웃 300초)를 기다리지 않았다
     assert r["after"] == {"send": False, "stop": True, "status": "중단했습니다"}
-    assert r["next"]["status"] is not None and r["messages"] == 4
+    assert r["next"]["status"] == "1토큰 · 1.0 tok/s" and r["next"]["final"] == "나" and r["messages"] == 4  # 다음 답이 실제로 성공했다
     # 중단된 턴의 받은 부분("가")이 두 번째 요청의 문맥에 있다
     contents = [m["content"] for m in fake.requests[1]["messages"]]
     assert contents[1:] == ["멈출 질문", "가", "다음 질문"]
@@ -98,3 +99,16 @@ def test_창은_모델_출력의_HTML을_해석하지_않고_글자_그대로_�
     assert "driver_error" not in r, r
     assert r["first"]["final"] == "<b>굵게</b>"
     assert r["bold_elements"] == 0
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_브리지가_없거나_호출이_실패해도_UI가_막히지_않는다(fake, name):
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    r = run_driver(name, fake.host, "bridge")
+    assert "driver_error" not in r, r
+    # 브리지가 없을 때: 아무것도 만들지 않고 입력을 지키며 안내만 한다
+    assert r["no_bridge"] == {"messages": 0, "input": "질문", "send_disabled": False, "stop_disabled": True, "status": "준비 중입니다. 잠시 뒤에 다시 보내세요."}
+    # 호출이 거부될 때: 말풍선을 되돌리고 입력을 복구하며 다시 보낼 수 있다
+    assert r["rejected"] == {"messages": 0, "input": "질문", "send_disabled": False, "stop_disabled": True, "status": "보내지 못했습니다. 다시 시도하세요."}
+    assert r["recovered"]["final"] == "답" and r["recovered"]["status"] == "1토큰 · 1.0 tok/s"
+    assert fake.requests and len(fake.requests) == 1  # 실패한 두 번은 서버까지 가지 않았다

@@ -323,3 +323,115 @@ def test_창을_닫으면_중단하고_새_질문을_받지_않는다():
     gate.set()
     assert events[-1] == {"type": "stopped"}
     assert session.send("q2") == {"ok": False, "reason": "busy"}
+
+
+def test_중단해도_답에는_화면에_전달된_토큰만_남는다():
+    """stop()이 토큰 전달 직전·직후 어느 경계에 걸려도, 문맥에 남는 답 = 이벤트로 나간 토큰의 연결이다."""
+    import random
+
+    rng = random.Random(7)
+    boundary_hits = 0
+    for _ in range(80):
+        def many(text):
+            for i in range(60):
+                yield Token(f"t{i} ")
+            yield Done(60, 1_000_000_000)
+
+        client = ScriptedClient(many)
+        events = []
+
+        def emit(ev):
+            events.append(ev)
+            time.sleep(0.0003)  # 전달 구간을 넓혀 stop()이 경계에 걸리기 쉽게 한다
+
+        session = ChatSession(client, "m", OPTIONS, emit)
+        session.send("q")
+        threading.Timer(rng.uniform(0, 0.012), session.stop).start()
+        assert session.join(10)
+        terminals = [e["type"] for e in events if e["type"] != "token"]
+        assert len(terminals) == 1 and events[-1]["type"] == terminals[0]
+        delivered = "".join(e["text"] for e in events if e["type"] == "token")
+        if events[-1]["type"] == "stopped":
+            boundary_hits += 1
+        session.join(10)
+        session.send("다음")
+        session.join(10)
+        history = client.calls[-1][1:-1]  # system과 마지막 질문을 뺀 문맥
+        if delivered:
+            assert history == [{"role": "user", "content": "q"}, {"role": "assistant", "content": delivered}]
+        else:
+            assert history == []
+    assert boundary_hits >= 10  # 중단이 실제로 걸린 경우가 충분했다(시험이 의미 있다)
+
+
+class SleepyLock:
+    """_emit_lock 대용. 첫 스레드(첫 턴의 작업 스레드)가 n번째로 락을 잡으려 할 때, 잡기 전에 0.3초 쉰다.
+    경합 구간을 결정적으로 벌려 순서 결함을 드러낸다."""
+
+    def __init__(self, sleep_on_acquisition: int):
+        self._lock = threading.RLock()
+        self._n = sleep_on_acquisition
+        self._first = None
+        self._count = 0
+
+    def __enter__(self):
+        tid = threading.get_ident()
+        if self._first is None:
+            self._first = tid
+        if tid == self._first:
+            self._count += 1
+            if self._count == self._n:
+                time.sleep(0.3)
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._lock.release()
+
+
+def test_중단해도_답에는_화면에_전달된_토큰만_남는다_경계를_벌려서():
+    """작업 스레드가 두 번째 토큰을 전달하려 락을 잡기 직전에 stop()이 들어와도 그 토큰은 문맥에 없다."""
+
+    def three(text):
+        yield Token("t0 ")
+        yield Token("t1 ")
+        yield Token("t2 ")
+        yield Done(3, 1_000_000_000)
+
+    client = ScriptedClient(three)
+    session, events = make(client)
+    session._emit_lock = SleepyLock(sleep_on_acquisition=2)
+    session.send("q")
+    deadline = time.time() + 5
+    while not events and time.time() < deadline:
+        time.sleep(0.005)
+    session.stop()  # 작업 스레드가 두 번째 토큰 앞에서 쉬는 동안
+    assert session.join(5)
+    delivered = "".join(e["text"] for e in events if e["type"] == "token")
+    assert delivered == "t0 " and events[-1] == {"type": "stopped"}
+    session.send("다음")
+    session.join(5)
+    assert client.calls[-1][1:-1] == [{"role": "user", "content": "q"}, {"role": "assistant", "content": "t0 "}]
+
+
+def test_새_턴의_토큰은_이전_턴의_종료_이벤트_뒤에_나간다():
+    def two(text):
+        yield Token(f"{text}1")
+        yield Token(f"{text}2")
+        yield Done(2, 1_000_000_000)
+
+    session, events = make(ScriptedClient(two))
+    # A의 작업 스레드가 종료 이벤트를 내려고 락을 잡기 직전(세 번째 획득)에 쉰다. 확정이 락 안에 있으면 그동안 busy라 B는 못 들어온다
+    session._emit_lock = SleepyLock(sleep_on_acquisition=3)
+    assert session.send("A") == {"ok": True}
+    accepted = None
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        accepted = session.send("B")
+        if accepted["ok"]:
+            break
+        time.sleep(0.01)
+    assert accepted == {"ok": True}
+    assert session.join(10)
+    order = [e.get("text") or e["type"] for e in events]
+    assert order == ["A1", "A2", "done", "B1", "B2", "done"], order

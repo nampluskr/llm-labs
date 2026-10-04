@@ -1,5 +1,5 @@
 """실제 pywebview 창을 띄워 DOM을 조작·관찰한다. 사용: python gui_driver.py <client> <host> <scenario>
-시나리오: ok(두 질문) · stop(중단 버튼) · many(12번 연속 질문) · escape(HTML 이스케이프)
+시나리오: ok(두 질문) · stop(중단 버튼) · many(12번 연속 질문) · escape(HTML 이스케이프) · bridge(브리지 없음·호출 거부)
 결과를 JSON 한 줄로 stdout에 낸다. pytest(test_gui.py)가 서브프로세스로 돌린다."""
 
 import json
@@ -87,6 +87,22 @@ def drive(window, result, scenario):
                 finals.append(ask(window, f"질문{i}")["status"])
                 js(window, "document.getElementById('status').textContent = ''; 0")
             result["statuses"] = finals
+        elif scenario == "bridge":
+            snap = "JSON.stringify({messages: document.querySelectorAll('.msg').length, input: document.getElementById('input').value, send_disabled: document.getElementById('send').disabled, stop_disabled: document.getElementById('stop').disabled, status: document.getElementById('status').textContent})"
+            wait(window, "document.getElementById('send').disabled === false", 10)
+            # 1) 브리지가 없는 것처럼 만든다
+            js(window, "window.__api = window.pywebview.api; window.pywebview.api = undefined; 0")
+            submit(window, "질문")
+            result["no_bridge"] = json.loads(js(window, snap))
+            js(window, "window.pywebview.api = window.__api; 0")
+            # 2) 호출이 거부(reject)되는 것처럼 만든다
+            js(window, "window.__send = window.pywebview.api.send; window.pywebview.api.send = () => Promise.reject(new Error('x')); 0")
+            submit(window, "질문")
+            wait(window, "document.querySelectorAll('.msg').length === 0 && document.getElementById('send').disabled === false", 5)
+            result["rejected"] = json.loads(js(window, snap))
+            js(window, "window.pywebview.api.send = window.__send; 0")
+            # 3) 복구한 뒤 정상으로 보낸다
+            result["recovered"] = ask(window, "질문")
         elif scenario == "escape":
             result["first"] = ask(window, "태그")
             result["bold_elements"] = js(window, "document.querySelectorAll('.msg.assistant b').length")

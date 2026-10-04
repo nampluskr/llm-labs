@@ -43,12 +43,23 @@ class FakeOllama:
         self.server.server_close()
 
 
-def send_lines(handler, lines, status=200, delay=0.0):
+def send_headers(handler, status=200):
     handler.send_response(status)
     handler.send_header("Content-Type", "application/x-ndjson")
     handler.end_headers()
+
+
+def send_body(handler, lines, delay=0.0):
+    """헤더를 이미 보낸 응답에 줄을 더한다. 스트림을 도중에 멈추는 시나리오에 쓴다."""
     for line in lines:
-        handler.wfile.write((json.dumps(line, ensure_ascii=False) + "\n").encode("utf-8") if not isinstance(line, bytes) else line)
+        data = line if isinstance(line, bytes) else (json.dumps(line, ensure_ascii=False) + chr(10)).encode("utf-8")
+        handler.wfile.write(data)
         handler.wfile.flush()
         if delay:
             time.sleep(delay)
+
+
+def send_lines(handler, lines, status=200, delay=0.0):
+    """한 응답 전체(헤더 + 줄들). 같은 응답에 두 번 부르지 않는다(헤더가 본문에 섞인다)."""
+    send_headers(handler, status)
+    send_body(handler, lines, delay)
