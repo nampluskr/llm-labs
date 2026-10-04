@@ -201,3 +201,41 @@ def test_창은_생각_중_직접_닫았다가_답_도중_다시_연_블록을_�
     assert r.get("closed_early") is True and r.get("reopened_during") is True  # 생각 중에 직접 닫고, 답이 흐르는 도중 다시 열었다
     assert r["final"]["answer"] == "답1답2답3답4"
     assert r["open_at_end"] is True  # 다시 연 블록을 다음 토큰이 또 접지 않는다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창_드롭다운에_모든_모델이_보이고_바꾸면_이전_모델을_내리고_다음_질문부터_새_모델과_옵션으로_답한다(fake, name):
+    fake.tags = ["qwen3:8b", "exaone3.5:7.8b", "bge-m3:latest"]
+    fake.capabilities_by_model = {
+        "qwen3:8b": ["completion", "tools", "thinking"],
+        "exaone3.5:7.8b": ["completion"],
+        "bge-m3:latest": ["embedding"],
+    }
+    fake.script = lambda h: send_lines(h, [chunk("가"), chunk("나"), chunk("다"), done_chunk(3, 1_000_000_000)], delay=0.25)
+    r = run_driver(name, fake.host, "models")
+    assert "driver_error" not in r, r
+    # 드롭다운: /api/tags의 모든 모델이 보이고, 채팅할 수 없는 모델만 선택 불가로 표시된다
+    assert [o["value"] for o in r["options"]] == ["qwen3:8b", "exaone3.5:7.8b", "bge-m3:latest"]
+    assert [o["disabled"] for o in r["options"]] == [False, False, True]
+    assert "채팅 불가" in r["options"][2]["text"]
+    assert r["initial"]["model"] == "qwen3:8b" and r["initial"]["numctx"] == "4096" and r["initial"]["temp"] == "0.7"
+    # 전환: 헤더가 바뀌고, 이전 모델이 내려가고, 새 모델은 사고 과정을 지원하지 않는다
+    assert r["switched"] is True and "exaone3.5:7.8b(으)로 바꿨습니다" in r["after_switch"]["status"]
+    assert r["after_switch"]["model"] == "exaone3.5:7.8b" and "exaone3.5:7.8b" in r["after_switch"]["info"] and "사고 과정 없음" in r["after_switch"]["info"]
+    assert fake.unloads == [{"model": "qwen3:8b", "messages": [], "keep_alive": 0, "stream": False}]
+    # 임베딩 모델은 억지로 골라도 거절되고 선택이 되돌아간다
+    assert "채팅할 수 없는" in r["embedding"]["status"] and r["embedding"]["model"] == "exaone3.5:7.8b"
+    assert len(fake.unloads) == 1
+    # 옵션: 헤더에 반영되고 다음 요청에 실린다
+    assert r["options_set"] is True and "num_ctx 8192" in r["after_options"]["info"] and "temperature 0.2" in r["after_options"]["info"]
+    assert r["ask"]["status"] == "3토큰 · 3.0 tok/s"
+    body = fake.requests[0]
+    assert body["model"] == "exaone3.5:7.8b" and body["think"] is False
+    assert body["options"] == {"num_ctx": 8192, "temperature": 0.2}
+    # 범위 밖·빈 값은 거절되고 입력이 되돌아간다
+    assert "4096~8192" in r["out_of_range"]["status"] and r["out_of_range"]["numctx"] == "8192"
+    assert "temperature" in r["empty_temp"]["status"] and r["empty_temp"]["temp"] == "0.2"
+    # 답변 중에는 모델·옵션 입력이 모두 잠기고, 끝나면 풀린다
+    assert r["locked_while_busy"] == [[True, True, True]], r["locked_while_busy"]
+    assert r["after_busy"] == {"model": False, "numctx": False, "temp": False}
+    assert len(fake.requests) == 2  # 거절된 변경은 요청을 만들지 않았다

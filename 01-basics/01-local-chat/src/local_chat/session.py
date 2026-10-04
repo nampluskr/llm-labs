@@ -18,6 +18,7 @@ emit하는 이벤트(dict):
     종료 이벤트 뒤에 나간다.
   - 종료 이벤트 emit 전에 busy가 풀린다. 화면이 종료 이벤트를 받고 바로 다음 질문을 보내도
     거절되지 않는다(emit 콜백 안에서 send해도 된다).
+  - 모델·옵션·think 설정(configure)은 답변 중에는 거절하고, 질문을 보내는 순간의 값이 그 턴에 고정된다.
   - 중단(stop)은 작업 스레드가 막혀 있어도(모델 적재 중, 서버 무응답) 즉시 효과가 난다.
     stop()이 직접 기록을 확정하고 stopped를 emit하며, 그 턴의 작업 스레드는 취소 표시가
     붙어 뒤에서 정리만 한다(이후 이벤트는 버려지고, 호출 층 제너레이터는 깨어나는 대로 닫힌다).
@@ -32,8 +33,9 @@ MAX_TURNS = 10  # 문맥으로 보내는 직전 대화 턴 수. 한 턴 = 질문
 
 
 class _Turn:
-    def __init__(self, text: str):
+    def __init__(self, text: str, model: str, options: dict, think: bool):
         self.text = text
+        self.model, self.options, self.think = model, options, think  # 보내는 순간의 설정. 진행 중에는 바뀌지 않는다
         self.reply: list[str] = []  # 화면에 전달된 토큰만
         self.cancelled = threading.Event()  # stop()·emit 실패가 붙인다. 이후 이 턴의 emit은 버려진다
         self.finalized = False  # 기록 확정과 busy 해제를 한 번만 하기 위한 표시
@@ -41,7 +43,7 @@ class _Turn:
 
 class ChatSession:
     def __init__(self, client, model, options, emit, system_prompt=SYSTEM_PROMPT, think=False):
-        self._client, self._model, self._options, self._think = client, model, options, think
+        self._client, self._model, self._options, self._think = client, model, dict(options), think
         self._emit_cb = emit
         self._system = system_prompt
         self._turns: list[tuple[str, str]] = []  # 끝난 턴만: (질문, 답)
@@ -56,6 +58,31 @@ class ChatSession:
     @property
     def turn_count(self) -> int:
         return len(self._turns)
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def options(self) -> dict:
+        return dict(self._options)
+
+    @property
+    def think(self) -> bool:
+        return self._think
+
+    def configure(self, model: str | None = None, options: dict | None = None, think: bool | None = None) -> dict:
+        """다음 질문부터 쓸 설정을 바꾼다. 답변 중에는 거절한다(진행 중인 답의 모델·옵션이 바뀌지 않게)."""
+        with self._lock:
+            if self._busy:
+                return {"ok": False, "reason": "busy"}
+            if model is not None:
+                self._model = model
+            if options is not None:
+                self._options = dict(options)
+            if think is not None:
+                self._think = think
+        return {"ok": True}
 
     def messages_for(self, text: str) -> list[dict]:
         """이번 질문과 함께 보낼 메시지: 시스템 + 직전 MAX_TURNS턴 + 질문."""
@@ -75,7 +102,7 @@ class ChatSession:
                 return {"ok": False, "reason": "busy"}
             self._busy = True
             self._idle.clear()
-            turn = self._turn = _Turn(text)
+            turn = self._turn = _Turn(text, self._model, dict(self._options), self._think)
             messages = self.messages_for(text)  # 문맥은 보내는 순간에 확정한다
         threading.Thread(target=self._run, args=(turn, messages), daemon=True).start()
         return {"ok": True}
@@ -138,7 +165,7 @@ class ChatSession:
         final: dict | None = None
         gen = None
         try:
-            gen = self._client.stream(messages, model=self._model, options=self._options, think=self._think)
+            gen = self._client.stream(messages, model=turn.model, options=turn.options, think=turn.think)
             for event in gen:
                 if turn.cancelled.is_set():
                     break

@@ -1,4 +1,4 @@
-"""가짜 Ollama 서버: /api/chat과 /api/show를 흉내 낸다. 호출 층·앱 테스트가 같이 쓴다."""
+"""가짜 Ollama 서버: /api/chat, /api/show, /api/tags를 흉내 낸다. 호출 층·앱 테스트가 같이 쓴다."""
 
 import json
 import threading
@@ -20,10 +20,16 @@ def done_chunk(count=4, duration=2_000_000_000):
 
 class FakeOllama:
     """/api/chat은 script(handler)가 응답을 쓰고, /api/show는 capabilities를 돌려준다.
-    requests에는 /api/chat 요청 본문만 쌓인다."""
+    /api/tags는 tags(모델 이름 목록)를 돌려준다. 모델별 capabilities는 capabilities_by_model에 없으면 capabilities를 쓴다.
+    빈 messages와 keep_alive 0인 /api/chat 요청은 "모델 내리기"로 보고 unloads에 쌓으며 requests에는 쌓지 않는다.
+    requests에는 그 밖의 /api/chat 요청 본문만 쌓인다."""
 
     def __init__(self):
         self.requests = []
+        self.unloads = []
+        self.unload_status = 200  # 404 등으로 바꾸면 모델 내리기가 실패한다
+        self.tags = None  # 모델 이름 목록. None이면 /api/tags가 404
+        self.capabilities_by_model = {}
         self.show_requests = []
         self.capabilities = ["completion"]  # 사고 과정을 지원하는 모델이면 "thinking"을 더한다
         self.show_script = None  # 주면 /api/show 응답을 직접 쓴다(느린 응답 시험)
@@ -42,10 +48,24 @@ class FakeOllama:
                     if owner.show_script is not None:
                         owner.show_script(self)
                         return
-                    send_lines(self, [{"model": body.get("model"), "capabilities": owner.capabilities}])
+                    caps = owner.capabilities_by_model.get(body.get("model"), owner.capabilities)
+                    send_lines(self, [{"model": body.get("model"), "capabilities": caps}])
+                    return
+                if body.get("messages") == [] and body.get("keep_alive") == 0:
+                    owner.unloads.append(body)
+                    if owner.unload_status != 200:
+                        send_lines(self, [{"error": "model not found"}], status=owner.unload_status)
+                    else:
+                        send_lines(self, [chunk("", True, done_reason="unload")])
                     return
                 owner.requests.append(body)
                 owner.script(self)
+
+            def do_GET(self):
+                if self.path == "/api/tags" and owner.tags is not None:
+                    send_lines(self, [{"models": [{"name": n, "model": n} for n in owner.tags]}])
+                else:
+                    send_lines(self, [{"error": "not found"}], status=404)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.host = f"http://127.0.0.1:{self.server.server_address[1]}"

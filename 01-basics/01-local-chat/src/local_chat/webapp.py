@@ -2,12 +2,15 @@
 
 import argparse
 import json
+import threading
 from pathlib import Path
 
 import webview
 
 from .capabilities import supports_thinking
 from .defaults import DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_OPTIONS
+from .models import list_models, unload_model
+from .options import validate_options
 from .session import ChatSession
 
 INDEX = Path(__file__).parent / "ui" / "index.html"
@@ -18,14 +21,20 @@ class Api:
     pywebview는 공개 속성을 훑어 JS에 노출하므로 내부 상태는 밑줄로 시작한다."""
 
     def __init__(self, client, model, options):
-        self._client, self._model, self._options = client, model, options
+        self._client = client
         self._window = None
+        self._config_lock = threading.Lock()  # 모델 전환·옵션 변경을 한 번에 하나씩
+        # 설치된 모델 전체(/api/tags). 현재 모델이 목록에 없으면(미설치이거나 목록을 못 받음) 맨 앞에 둔다
+        self._catalog = list_models(client.host)
+        entry = next((m for m in self._catalog if m["name"] == model), None)
+        if entry is None:
+            entry = {"name": model, "chat": True, "thinking": supports_thinking(client.host, model)}
+            self._catalog.insert(0, entry)
         # 사고 과정은 모델이 지원할 때만 켠다. 지원하지 않는 모델에 think=True를 보내면 Ollama가 400을 낸다(D-10)
-        self._think = supports_thinking(client.host, model)
-        self._session = ChatSession(client, model, options, self._emit, think=self._think)
+        self._session = ChatSession(client, model, options, self._emit, think=entry["thinking"])
 
     def _emit(self, event: dict) -> None:
-        # ensure_ascii=True라 U+2028 같은 문자도 \uXXXX로 나가 JS 문자열로 안전하다
+        # json.dumps의 기본값(ensure_ascii=True)이라 U+2028 같은 문자도 이스케이프돼 나가 JS 문자열로 안전하다
         self._window.evaluate_js("window.onChatEvent(" + json.dumps(event) + ")")
 
     def send(self, text):
@@ -34,13 +43,47 @@ class Api:
     def stop(self):
         self._session.stop()
 
+    def models(self):
+        """드롭다운에 보일 모델 전체와 현재 모델."""
+        return {"models": self._catalog, "current": self._session.model}
+
+    def set_model(self, name):
+        """다음 질문부터 쓸 모델을 바꾼다. 답변 중에는 거절한다. 바꾸면 이전 모델을 바로 내린다(D-6)."""
+        entry = next((m for m in self._catalog if m["name"] == name), None) if isinstance(name, str) else None
+        if entry is None:
+            return {"ok": False, "reason": "unknown", "message": "목록에 없는 모델이다"}
+        if not entry["chat"]:
+            return {"ok": False, "reason": "not_chat", "message": "채팅할 수 없는 모델이다(임베딩 모델)"}
+        with self._config_lock:
+            previous = self._session.model
+            if name == previous:
+                return {"ok": True, "unloaded": None, "info": self.info()}
+            result = self._session.configure(model=name, think=entry["thinking"])
+            if not result["ok"]:
+                return {**result, "message": "답변 중에는 바꿀 수 없다"}
+            # 이전 모델을 바로 내려 두 모델이 VRAM에 겹치지 않게 한다. 실패해도 전환은 유지하고 알린다
+            return {"ok": True, "unloaded": unload_model(self._client.host, previous), "info": self.info()}
+
+    def set_options(self, num_ctx, temperature):
+        """다음 질문부터 쓸 num_ctx·temperature를 바꾼다. 범위 밖 값과 답변 중에는 거절한다(고쳐서 받지 않는다)."""
+        try:
+            options = validate_options(num_ctx, temperature)
+        except ValueError as e:
+            return {"ok": False, "reason": "invalid", "message": str(e)}
+        with self._config_lock:
+            result = self._session.configure(options=options)
+            if not result["ok"]:
+                return {**result, "message": "답변 중에는 바꿀 수 없다"}
+            return {"ok": True, "info": self.info()}
+
     def info(self):
+        options = self._session.options
         return {
             "client": self._client.name,
-            "model": self._model,
-            "num_ctx": self._options.get("num_ctx"),
-            "temperature": self._options.get("temperature"),
-            "think": self._think,
+            "model": self._session.model,
+            "num_ctx": options.get("num_ctx"),
+            "temperature": options.get("temperature"),
+            "think": self._session.think,
         }
 
 

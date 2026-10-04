@@ -1,6 +1,6 @@
 """실제 pywebview 창을 띄워 DOM을 조작·관찰한다. 사용: python gui_driver.py <client> <host> <scenario> [entry]
 시나리오: ok(두 질문) · stop(중단 버튼, 취소된 요청의 늦은 이벤트까지 관찰) · many(12번 연속 질문)
-         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
+         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
 entry를 주면 build()가 아니라 앱 진입점 local_chat.app_<client>.main(argv)로 창을 띄운다.
 결과를 JSON 한 줄로 stdout에 낸다. pytest(test_gui.py)가 서브프로세스로 돌린다."""
 
@@ -161,6 +161,61 @@ def drive(window, result, scenario):
             # 사용자가 접힌 블록을 다시 펼 수 있다
             js(window, f"{LAST}.querySelector('details.think').open = true; 0")
             result["reopened"] = json.loads(js(window, probe))["open"]
+        elif scenario == "models":
+            wait(window, "document.getElementById('model').disabled === false", 15)
+            snap = (
+                "JSON.stringify({status: document.getElementById('status').textContent, info: document.getElementById('info').textContent, "
+                "model: document.getElementById('model').value, numctx: document.getElementById('numctx').value, "
+                "temp: document.getElementById('temp').value, model_disabled: document.getElementById('model').disabled})"
+            )
+
+            def fire(selector, value=None):
+                setter = "" if value is None else f"el.value = {json.dumps(value)}; "
+                js(window, f"(function(){{const el = document.getElementById('{selector}'); {setter}el.dispatchEvent(new Event('change')); return 0}})()")
+
+            def settle(text, timeout=10):
+                return wait(window, f"document.getElementById('status').textContent.includes({json.dumps(text)})", timeout)
+
+            result["options"] = json.loads(js(window, "JSON.stringify(Array.from(document.getElementById('model').options).map(o => ({value: o.value, text: o.textContent, disabled: o.disabled})))"))
+            result["initial"] = json.loads(js(window, snap))
+            # 모델 전환
+            fire("model", "exaone3.5:7.8b")
+            result["switched"] = settle("바꿨습니다")
+            result["after_switch"] = json.loads(js(window, snap))
+            # 채팅할 수 없는 모델(임베딩)을 억지로 고르면 거절되고 되돌아간다
+            js(window, "document.getElementById('status').textContent = ''; 0")
+            fire("model", "bge-m3:latest")
+            settle("채팅할 수 없는")
+            result["embedding"] = json.loads(js(window, snap))
+            # 옵션 변경
+            js(window, "document.getElementById('status').textContent = ''; 0")
+            js(window, "document.getElementById('numctx').value = '8192'; document.getElementById('temp').value = '0.2'; 0")
+            fire("numctx")
+            result["options_set"] = settle("옵션을 바꿨습니다")
+            result["after_options"] = json.loads(js(window, snap))
+            result["ask"] = ask(window, "질문")
+            # 범위 밖 num_ctx는 거절되고 입력이 되돌아간다
+            js(window, "document.getElementById('status').textContent = ''; 0")
+            fire("numctx", "9000")
+            settle("4096~8192")
+            result["out_of_range"] = json.loads(js(window, snap))
+            # 빈 temperature를 0으로 읽지 않는다
+            js(window, "document.getElementById('status').textContent = ''; 0")
+            fire("temp", "")
+            settle("temperature")
+            result["empty_temp"] = json.loads(js(window, snap))
+            # 답변 중에는 모델·옵션 입력이 잠긴다
+            submit(window, "느린 질문")
+            locked, end = [], time.time() + 30
+            while time.time() < end:
+                st = json.loads(js(window, "JSON.stringify({busy: !document.getElementById('stop').disabled, model: document.getElementById('model').disabled, numctx: document.getElementById('numctx').disabled, temp: document.getElementById('temp').disabled, status: document.getElementById('status').textContent})"))
+                if st["busy"]:
+                    locked.append((st["model"], st["numctx"], st["temp"]))
+                if st["status"]:
+                    break
+                time.sleep(0.02)
+            result["locked_while_busy"] = sorted(set(locked))
+            result["after_busy"] = json.loads(js(window, "JSON.stringify({model: document.getElementById('model').disabled, numctx: document.getElementById('numctx').disabled, temp: document.getElementById('temp').disabled})"))
         elif scenario == "escape":
             result["first"] = ask(window, "태그")
             result["bold_elements"] = js(window, "document.querySelectorAll('.msg.assistant b').length")

@@ -552,3 +552,52 @@ def test_토큰_전달이_실패해도_막힌_읽기를_기다리지_않는다()
     assert session.join(2)
     assert session.turn_count == 0  # 전달되지 않은 토큰뿐이라 남기지 않는다
     gate.set()
+
+
+def test_configure한_모델_옵션_think는_다음_질문부터_호출_층에_전달된다():
+    seen = []
+
+    class Recording(ScriptedClient):
+        def stream(self, messages, *, model, options, think=False):
+            seen.append((model, dict(options), think))
+            return super().stream(messages, model=model, options=options, think=think)
+
+    session = ChatSession(Recording(echo), "A", {"num_ctx": 4096, "temperature": 0.7}, lambda ev: None, think=False)
+    ask(session, "q1")
+    assert session.configure(model="B", options={"num_ctx": 8192, "temperature": 0.1}, think=True) == {"ok": True}
+    ask(session, "q2")
+    assert seen == [("A", {"num_ctx": 4096, "temperature": 0.7}, False), ("B", {"num_ctx": 8192, "temperature": 0.1}, True)]
+
+
+def test_답변_중에는_설정_변경을_거절하고_진행_중인_턴은_처음_값을_쓴다():
+    gate = threading.Event()
+    seen = []
+
+    class Slow(ScriptedClient):
+        def stream(self, messages, *, model, options, think=False):
+            seen.append((model, dict(options)))
+            return super().stream(messages, model=model, options=options, think=think)
+
+    def slow(text):
+        yield Token("a")
+        gate.wait(5)
+        yield Done(1, 1)
+
+    session = ChatSession(Slow(slow), "A", {"num_ctx": 4096, "temperature": 0.7}, lambda ev: None)
+    session.send("q")
+    time.sleep(0.1)
+    assert session.configure(model="B") == {"ok": False, "reason": "busy"}
+    assert session.configure(options={"num_ctx": 8192, "temperature": 0.7}) == {"ok": False, "reason": "busy"}
+    assert session.model == "A" and session.options == {"num_ctx": 4096, "temperature": 0.7}  # 바뀌지 않았다
+    gate.set()
+    session.join(5)
+    assert seen == [("A", {"num_ctx": 4096, "temperature": 0.7})]
+    assert session.configure(model="B") == {"ok": True}  # 끝난 뒤에는 바꿀 수 있다
+
+
+def test_options는_바깥에서_고쳐도_세션에_영향이_없다():
+    options = {"num_ctx": 4096, "temperature": 0.7}
+    session = ChatSession(ScriptedClient(echo), "A", options, lambda ev: None)
+    options["num_ctx"] = 99999
+    session.options["num_ctx"] = 99999
+    assert session.options == {"num_ctx": 4096, "temperature": 0.7}

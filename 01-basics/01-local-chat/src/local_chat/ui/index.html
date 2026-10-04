@@ -23,6 +23,14 @@
            display: flex; gap: 12px; align-items: baseline; }
   header h1 { font-size: 15px; margin: 0; }
   header span { color: var(--muted); font-size: 13px; }
+  #settings { padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+              display: flex; flex-wrap: wrap; gap: 14px; align-items: center; font-size: 13px; color: var(--muted); }
+  #settings label { display: flex; gap: 6px; align-items: center; }
+  #settings select, #settings input { font: inherit; padding: 3px 6px; border-radius: 6px;
+              border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  #settings input { width: 78px; }
+  #settings select { max-width: 260px; }
+  #settings :disabled { opacity: .5; }
   #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
   .msg { max-width: 82%; padding: 9px 13px; border-radius: 12px; border: 1px solid var(--border);
          white-space: pre-wrap; word-break: break-word; }
@@ -45,6 +53,11 @@
 </head>
 <body>
 <header><h1 id="title">local-chat</h1><span id="info"></span></header>
+<div id="settings">
+  <label>모델 <select id="model" disabled></select></label>
+  <label>num_ctx <input id="numctx" type="number" min="4096" max="8192" step="512" disabled></label>
+  <label>temperature <input id="temp" type="number" min="0" max="2" step="0.1" disabled></label>
+</div>
 <div id="log" aria-live="polite"></div>
 <div id="status"></div>
 <form id="form">
@@ -60,15 +73,30 @@
   const statusEl = document.getElementById("status");
   let current = null;   // 지금 채워지는 답변 말풍선
   let thinkEl = null;   // 그 답변의 사고 과정 블록(사고 과정이 올 때만 만든다)
+  const modelSel = document.getElementById("model");
+  const numctxEl = document.getElementById("numctx");
+  const tempEl = document.getElementById("temp");
   let busy = false;
+  let locked = false;   // 모델 전환·옵션 적용 중
   let ready = false;   // pywebview 브리지가 준비되면 true. 그 전에는 보내지 않는다
   let initStarted = false;
   let seq = 0;   // 보낼 때마다 올린다. 늦게 돌아온 응답이 다른 질문의 화면을 건드리지 못하게 한다
 
+  function refreshControls() {
+    sendBtn.disabled = busy || locked || !ready;
+    stopBtn.disabled = !busy;
+    const off = busy || locked || !ready;   // 답변 중·적용 중에는 모델과 옵션을 바꿀 수 없다
+    modelSel.disabled = numctxEl.disabled = tempEl.disabled = off;
+  }
+
   function setBusy(b) {
     busy = b;
-    sendBtn.disabled = b;
-    stopBtn.disabled = !b;
+    refreshControls();
+  }
+
+  function setLocked(b) {
+    locked = b;
+    refreshControls();
   }
 
   function addMsg(role, text) {
@@ -149,6 +177,7 @@
       statusEl.textContent = "준비 중입니다. 잠시 뒤에 다시 보내세요.";
       return;
     }
+    if (locked) return;   // 모델을 바꾸는 중에는 보내지 않는다
     setBusy(true);
     statusEl.textContent = "";
     const id = ++seq;
@@ -177,16 +206,70 @@
   });
   stopBtn.addEventListener("click", () => { if (bridgeReady()) window.pywebview.api.stop(); });
 
+  let shown = null;   // 화면에 반영된 설정(모델·옵션). 거절되면 이 값으로 되돌린다
+
+  function renderInfo(info) {
+    shown = info;
+    document.getElementById("title").textContent = "local-chat · " + info.client;
+    document.getElementById("info").textContent = info.model + " · num_ctx " + info.num_ctx + " · temperature " + info.temperature +
+      " · " + (info.think ? "사고 과정 표시" : "사고 과정 없음");
+    modelSel.value = info.model;
+    numctxEl.value = info.num_ctx;
+    tempEl.value = info.temperature;
+  }
+
+  function fillModels(data) {
+    modelSel.textContent = "";
+    for (const m of data.models) {
+      const opt = document.createElement("option");
+      opt.value = m.name;
+      opt.textContent = m.chat ? m.name : m.name + " (채팅 불가 · 임베딩)";   // 목록에는 모두 보이되 채팅 못 하는 모델은 고를 수 없다
+      opt.disabled = !m.chat;
+      modelSel.appendChild(opt);
+    }
+  }
+
+  async function applyChange(call, okMessage) {
+    setLocked(true);
+    let r;
+    try {
+      r = await call();
+    } catch (e) {
+      r = { ok: false, message: "적용하지 못했습니다." };
+    }
+    if (r.ok) {
+      renderInfo(r.info);
+      statusEl.textContent = okMessage ? okMessage(r) : "";
+    } else {
+      renderInfo(shown);   // 거절되면 화면의 값을 되돌린다
+      statusEl.textContent = r.message || "적용하지 못했습니다.";
+    }
+    setLocked(false);
+  }
+
+  modelSel.addEventListener("change", () => {
+    const name = modelSel.value;
+    if (!bridgeReady() || name === shown.model) return;
+    applyChange(() => window.pywebview.api.set_model(name), (r) =>
+      "모델을 " + name + "(으)로 바꿨습니다." + (r.unloaded === false ? " (이전 모델을 내리지 못했습니다)" : ""));
+  });
+
+  function commitOptions() {
+    if (!bridgeReady()) return;
+    const num = (el) => (el.value.trim() === "" ? null : Number(el.value));   // 빈 값을 0으로 읽지 않는다
+    applyChange(() => window.pywebview.api.set_options(num(numctxEl), num(tempEl)), () => "옵션을 바꿨습니다.");
+  }
+  numctxEl.addEventListener("change", commitOptions);
+  tempEl.addEventListener("change", commitOptions);
+
   async function init() {
     if (ready || initStarted || !bridgeReady()) return;
     initStarted = true;   // 이벤트와 직접 호출이 겹쳐도 한 번만 한다
     try {
-      const info = await window.pywebview.api.info();
-      document.getElementById("title").textContent = "local-chat · " + info.client;
-      document.getElementById("info").textContent = info.model + " · num_ctx " + info.num_ctx + " · temperature " + info.temperature +
-        " · " + (info.think ? "사고 과정 표시" : "사고 과정 없음");
+      fillModels(await window.pywebview.api.models());
+      renderInfo(await window.pywebview.api.info());
       ready = true;
-      setBusy(false);   // 보내기 버튼을 연다
+      refreshControls();   // 보내기 버튼과 설정 입력을 연다
     } catch (e) {
       initStarted = false;   // 다음 시도(pywebviewready)에서 다시 한다
     }
