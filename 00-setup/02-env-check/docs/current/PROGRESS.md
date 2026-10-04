@@ -56,3 +56,4 @@
 - **조치:** 모드 A(신규, v0.1)로 판별했다. 문서 검사 후 BRIEF·DECISIONS·PLAN을 `docs/current/`로 옮기고(README는 연습 폴더 루트에 둔다), 연습 플랜을 `docs/refs/`로 복사했다. `docs/ADVERSARIAL-REVIEW.md`(`workflow/docs/`에서 복사)와 빈 `docs/reviews/`를 만들었다. history 폴더와 `src/`는 만들지 않았다(첫 마감 때 생긴다).
 - **결과:** `.gitignore`와 `.claude/`는 저장소 루트에 이미 있어 점검만 했다. 기준 커밋을 만들었다.
 - **검증:** 문서 검사 목록(`DOC-SCHEMA.md` 10절) 전 항목 통과. 사본은 `cmp`로 원본과 같음을 확인했다.
+- **차단 증명(이 연습 폴더 경로):** 마감 기록 폴더의 기존 파일 Edit 차단(종료 코드 2), 백로그 JSON 직접 Edit 차단(2), current 읽기·Edit 통과(0), 코드 파일만 변경 후 Stop hook 차단(2), PROGRESS도 변경 후 통과(0). 증명용 파일과 변경은 지웠고 작업 트리는 깨끗하다. hook 입력을 Git Bash 경로(`/d/...`)로 주면 존재 확인이 틀려 첫 시도가 통과로 나왔다. 실제 도구는 Windows 경로를 주므로 Windows 경로(`D:/...`)로 다시 증명했다.
