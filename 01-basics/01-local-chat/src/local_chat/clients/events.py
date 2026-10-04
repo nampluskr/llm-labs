@@ -54,3 +54,10 @@ def make_done(eval_count, eval_duration) -> Done:
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
             raise ValueError(f"done 청크의 통계가 올바르지 않다: eval_count={eval_count!r}, eval_duration={eval_duration!r}")
     return Done(eval_count, eval_duration)
+
+
+def classify(status: int | None, message: str) -> str:
+    """HTTP 상태·오류 문구로 Error.kind를 정한다. 세 층이 같은 규칙을 쓴다."""
+    if status == 404 or "not found" in message.lower():
+        return MODEL_NOT_FOUND
+    return OTHER

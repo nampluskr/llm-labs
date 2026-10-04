@@ -4,15 +4,9 @@ import json
 
 import httpx
 
-from .events import CONNECTION, MODEL_NOT_FOUND, OTHER, Error, Message, Token, make_done
+from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done
 
 TIMEOUT = httpx.Timeout(10.0, read=300.0)  # 큰 모델 적재를 기다릴 수 있게 읽기는 길게
-
-
-def classify(status: int | None, message: str) -> str:
-    if status == 404 or "not found" in message.lower():
-        return MODEL_NOT_FOUND
-    return OTHER
 
 
 class HttpClient:

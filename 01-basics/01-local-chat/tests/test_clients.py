@@ -195,3 +195,40 @@ def test_콘솔은_실패하면_종료코드_1(fake, capsys):
     fake.script = lambda h: send_lines(h, [{"error": "model 'm' not found"}], status=404)
     assert console_main(["--host", fake.host, "--client", "http"]) == 1
     assert "오류(model_not_found)" in capsys.readouterr().out
+
+
+def test_options는_키를_버리지_않고_세_층이_그대로_보낸다(fake):
+    fake.script = lambda h: send_lines(h, [chunk("a"), done_chunk()])
+    options = {"num_ctx": 8192, "temperature": 0.2, "top_p": 0.5, "seed": 7, "num_predict": 50}
+    for name, c in clients(fake.host):
+        fake.requests.clear()
+        list(c.stream(MESSAGES, model="m", options=options))
+        assert fake.requests[0]["options"] == options, name
+
+
+class TimedOut:
+    """write 시각을 기록하는 출력 대상."""
+
+    def __init__(self):
+        self.writes = []
+
+    def write(self, s):
+        if s:
+            self.writes.append((time.perf_counter(), s))
+        return len(s)
+
+    def flush(self):
+        pass
+
+
+def test_토큰은_도착하는_대로_출력된다(fake):
+    """서버가 토큰 사이에 0.3초씩 쉬면, 첫 토큰이 마지막 토큰보다 그만큼 먼저 출력돼야 한다(몰아서 출력하지 않음)."""
+    from local_chat.console import run
+
+    fake.script = lambda h: send_lines(h, [chunk("A"), chunk("B"), chunk("C"), done_chunk(3, 1_000_000_000)], delay=0.3)
+    for name, c in clients(fake.host):
+        out = TimedOut()
+        assert run(c, "q", "m", out=out) == 0
+        t = {s: ts for ts, s in out.writes if s in ("A", "B", "C")}
+        assert set(t) == {"A", "B", "C"}, name
+        assert t["C"] - t["A"] >= 0.5, f"{name}: 토큰이 몰려서 출력됐다 {t}"

@@ -3,8 +3,7 @@
 import httpx
 import ollama
 
-from .events import CONNECTION, OTHER, Error, Message, Token, make_done
-from .http_client import classify
+from .events import CONNECTION, OTHER, Error, Message, Token, classify, make_done
 
 
 class OllamaClient:
@@ -27,6 +26,8 @@ class OllamaClient:
             yield Error(OTHER, "응답이 done 없이 끝났다")
         except ollama.ResponseError as e:
             yield Error(classify(e.status_code, e.error), e.error)
+        except ollama.RequestError as e:
+            yield Error(OTHER, str(e))
         except (ConnectionError, httpx.TransportError) as e:
             yield Error(CONNECTION, str(e) or type(e).__name__)
         except (ValueError, TypeError, AttributeError) as e:
