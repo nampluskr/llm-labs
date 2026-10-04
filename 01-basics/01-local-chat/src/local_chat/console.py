@@ -4,16 +4,15 @@ import argparse
 import sys
 
 from .clients import CLIENTS, Done, Error, Token
+from .defaults import DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_OPTIONS, SYSTEM_PROMPT
 
-DEFAULT_MODEL = "qwen3:8b"
-DEFAULT_OPTIONS = {"num_ctx": 4096, "temperature": 0.7}
 DEFAULT_PROMPT = "스트리밍 응답이 왜 체감 속도를 높이는지 세 문장으로 설명해줘."
 
 
 def run(client, prompt: str, model: str, out=None) -> int:
     out = out or sys.stdout
     messages = [
-        {"role": "system", "content": "너는 간결하게 한국어로 답하는 도우미다."},
+        {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
     print(f"[{client.name}] {model}", file=out)
@@ -35,7 +34,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="local_chat.console")
     p.add_argument("--client", choices=[*CLIENTS, "all"], default="all")
     p.add_argument("--model", default=DEFAULT_MODEL)
-    p.add_argument("--host", default="http://localhost:11434")
+    p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("prompt", nargs="?", default=DEFAULT_PROMPT)
     args = p.parse_args(argv)
     names = list(CLIENTS) if args.client == "all" else [args.client]

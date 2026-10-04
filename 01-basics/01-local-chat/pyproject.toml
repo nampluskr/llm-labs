@@ -19,3 +19,8 @@ dev = [
 [build-system]
 requires = ["uv_build>=0.11.29,<0.12"]
 build-backend = "uv_build"
+
+[project.scripts]
+local-chat-ollama = "local_chat.app_ollama:main"
+local-chat-langchain = "local_chat.app_langchain:main"
+local-chat-http = "local_chat.app_http:main"

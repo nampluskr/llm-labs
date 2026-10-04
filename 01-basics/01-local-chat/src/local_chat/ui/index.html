@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>local-chat</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --border: #d9dde5;
+    --user: #dbe8ff; --assistant: #ffffff; --accent: #2f6fed; --danger: #c0392b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --panel: #1b1f27; --text: #e6e8ee; --muted: #9aa3b2; --border: #2c323d;
+      --user: #25395f; --assistant: #1b1f27; --accent: #6b9bff; --danger: #ff7b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+         font: 15px/1.55 "Segoe UI", "Malgun Gothic", sans-serif; }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+           display: flex; gap: 12px; align-items: baseline; }
+  header h1 { font-size: 15px; margin: 0; }
+  header span { color: var(--muted); font-size: 13px; }
+  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 82%; padding: 9px 13px; border-radius: 12px; border: 1px solid var(--border);
+         white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: var(--user); }
+  .msg.assistant { align-self: flex-start; background: var(--assistant); }
+  .msg.error { color: var(--danger); }
+  #status { padding: 4px 16px; color: var(--muted); font-size: 12.5px; min-height: 22px; }
+  form { display: flex; gap: 8px; padding: 10px 16px 14px; background: var(--panel); border-top: 1px solid var(--border); }
+  textarea { flex: 1; resize: none; height: 54px; padding: 8px 10px; border-radius: 8px; font: inherit;
+             border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  button { padding: 0 18px; border-radius: 8px; border: 1px solid var(--border); font: inherit; cursor: pointer;
+           background: var(--accent); color: #fff; }
+  button#stop { background: transparent; color: var(--text); }
+  button:disabled { opacity: .45; cursor: default; }
+</style>
+</head>
+<body>
+<header><h1 id="title">local-chat</h1><span id="info"></span></header>
+<div id="log" aria-live="polite"></div>
+<div id="status"></div>
+<form id="form">
+  <textarea id="input" placeholder="질문을 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)" autofocus></textarea>
+  <button id="send" type="submit">보내기</button>
+  <button id="stop" type="button" disabled>중단</button>
+</form>
+<script>
+  const log = document.getElementById("log");
+  const input = document.getElementById("input");
+  const sendBtn = document.getElementById("send");
+  const stopBtn = document.getElementById("stop");
+  const statusEl = document.getElementById("status");
+  let current = null;   // 지금 채워지는 답변 말풍선
+  let busy = false;
+
+  function setBusy(b) {
+    busy = b;
+    sendBtn.disabled = b;
+    stopBtn.disabled = !b;
+  }
+
+  function addMsg(role, text) {
+    const el = document.createElement("div");
+    el.className = "msg " + role;
+    el.textContent = text;   // textContent: 모델 출력을 HTML로 해석하지 않는다
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  // 파이썬이 evaluate_js로 부른다
+  window.onChatEvent = function (ev) {
+    const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+    if (ev.type === "token") {
+      if (current) current.appendChild(document.createTextNode(ev.text));
+    } else if (ev.type === "done") {
+      statusEl.textContent = ev.eval_count + "토큰 · " + Number(ev.tok_s).toFixed(1) + " tok/s";
+      finish();
+    } else if (ev.type === "stopped") {
+      statusEl.textContent = "중단했습니다";
+      finish();
+    } else if (ev.type === "error") {
+      if (current) {
+        current.classList.add("error");
+        current.appendChild(document.createTextNode((current.textContent ? "\n" : "") + "[오류: " + ev.message + "]"));
+      }
+      statusEl.textContent = "오류(" + ev.kind + ")";
+      finish();
+    }
+    if (nearBottom) log.scrollTop = log.scrollHeight;
+  };
+
+  function finish() {
+    current = null;
+    setBusy(false);
+    input.focus();
+  }
+
+  async function send() {
+    const text = input.value.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    statusEl.textContent = "";
+    addMsg("user", text);
+    current = addMsg("assistant", "");
+    input.value = "";
+    const r = await window.pywebview.api.send(text);
+    if (!r.ok) {   // 파이썬이 거절하면 방금 만든 말풍선을 되돌린다
+      log.removeChild(current); log.removeChild(log.lastElementChild);
+      current = null; input.value = text; setBusy(r.reason === "busy");
+    }
+  }
+
+  document.getElementById("form").addEventListener("submit", (e) => { e.preventDefault(); send(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  });
+  stopBtn.addEventListener("click", () => window.pywebview.api.stop());
+
+  window.addEventListener("pywebviewready", async () => {
+    const info = await window.pywebview.api.info();
+    document.getElementById("title").textContent = "local-chat · " + info.client;
+    document.getElementById("info").textContent = info.model + " · num_ctx " + info.num_ctx + " · temperature " + info.temperature;
+  });
+</script>
+</body>
+</html>
