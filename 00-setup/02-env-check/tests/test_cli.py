@@ -34,6 +34,9 @@ class FakeClient:
         (1000, 1200, "알 수 없음"),
         (0, 0, "100% CPU"),
         (0, 5, "알 수 없음"),
+        (1000, None, "알 수 없음"),
+        (None, 500, "알 수 없음"),
+        (None, None, "알 수 없음"),
     ],
 )
 def test_processor_label(size, vram, expected):
@@ -97,8 +100,13 @@ def test_get_version_parses_response(monkeypatch):
         version_response(content=b"<html>not ollama</html>"),
         version_response(json={}),
         version_response(status=500, content=b""),
+        version_response(content=b"null"),
+        version_response(content=b"[]"),
+        version_response(json={"version": None}),
+        version_response(json={"version": ""}),
+        version_response(json={"version": {"a": 1}}),
     ],
-    ids=["html", "no-version-key", "http-500"],
+    ids=["html", "no-version-key", "http-500", "null", "list", "version-null", "version-empty", "version-object"],
 )
 def test_main_unexpected_version_response(monkeypatch, capsys, response):
     monkeypatch.setattr(cli.httpx, "get", fake_get(response))
@@ -113,3 +121,10 @@ def test_main_prints_connection_and_version(monkeypatch, capsys):
     assert cli.main([]) == 0
     out = capsys.readouterr().out
     assert "연결됨" in out and "버전: 0.35.1" in out
+
+
+def test_main_loaded_model_without_memory_fields(monkeypatch, capsys):
+    patch_server(monkeypatch, [], [model("test", 1_000_000_000, None)])
+    assert cli.main([]) == 0
+    out = capsys.readouterr().out
+    assert "알 수 없음" in out and "100% CPU" not in out

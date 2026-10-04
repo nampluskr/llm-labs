@@ -11,7 +11,11 @@ TIMEOUT = 5.0
 def get_version(host):
     response = httpx.get(f"{host}/api/version", timeout=TIMEOUT)
     response.raise_for_status()
-    return response.json()["version"]
+    data = response.json()
+    version = data.get("version") if isinstance(data, dict) else None
+    if not isinstance(version, str) or not version:
+        raise ValueError(f"/api/version 응답에 올바른 version이 없다: {data!r}")
+    return version
 
 
 def get_models(client):
@@ -20,6 +24,8 @@ def get_models(client):
 
 def processor_label(size, size_vram):
     """`ollama ps`의 PROCESSOR 열과 같은 규칙으로 GPU/CPU 비율을 만든다."""
+    if size is None or size_vram is None:
+        return "알 수 없음"
     if size_vram == 0:
         return "100% CPU"
     if size_vram == size:
@@ -32,13 +38,13 @@ def processor_label(size, size_vram):
 
 def get_loaded(client):
     return [
-        (m.model, m.size, processor_label(m.size or 0, m.size_vram or 0))
+        (m.model, m.size, processor_label(m.size, m.size_vram))
         for m in client.ps().models
     ]
 
 
 def gb(size):
-    return f"{(size or 0) / 1e9:.1f}GB"
+    return "크기 알 수 없음" if size is None else f"{size / 1e9:.1f}GB"
 
 
 def main(argv=None):

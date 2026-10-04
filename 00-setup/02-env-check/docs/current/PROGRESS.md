@@ -68,7 +68,7 @@
 - **검증:** 문서 검사 목록(`DOC-SCHEMA.md` 10절) 전 항목 통과. 사본은 `cmp`로 원본과 같음을 확인했다.
 - **차단 증명(이 연습 폴더 경로):** 마감 기록 폴더의 기존 파일 Edit 차단(종료 코드 2), 백로그 JSON 직접 Edit 차단(2), current 읽기·Edit 통과(0), 코드 파일만 변경 후 Stop hook 차단(2), PROGRESS도 변경 후 통과(0). 증명용 파일과 변경은 지웠고 작업 트리는 깨끗하다. hook 입력을 Git Bash 경로(`/d/...`)로 주면 존재 확인이 틀려 첫 시도가 통과로 나왔다. 실제 도구는 Windows 경로를 주므로 Windows 경로(`D:/...`)로 다시 증명했다.
 
-### Phase 2 — Ollama 점검 (2026-10-04) — 구현 완료, 검증 대기
+### Phase 2 — Ollama 점검 (2026-10-04) — 완료
 
 - **무엇을:** `env-check` CLI를 만들었다(`src/env_check/cli.py`, 진입점 `env-check`). 서버 연결·버전·받은 모델 목록·적재된 모델과 PROCESSOR를 읽기 전용 API로 출력하고, 서버에 연결하지 못하면 오류 문구를 stderr에 내고 종료 코드 1로 끝난다. 테스트 9개를 `tests/test_cli.py`에 썼다. 호출 방식은 DECISIONS D-7에 적었다.
 - **결과:** `src/env_check/`·`tests/`가 생겼고, `pyproject.toml`에 `httpx`(명시)·`pytest`(dev)·스크립트·빌드 설정을 더했다. PROCESSOR는 `ollama ps`와 같은 규칙(100% GPU / 100% CPU / 비율)으로 계산한다.
@@ -86,7 +86,12 @@
   - Minor 4(처리 안 함): 파이프 출력의 cp949 한글 깨짐. 터미널에서는 정상이고 완료 조건에 영향이 없다. `PYTHONUTF8=1`로 우회한다.
   - 보완 뒤 `uv run pytest` 17개 통과, 실제 서버 출력 확인(연결됨·버전 0.35.1).
   - 이 리뷰어는 구현자와 같은 벤더라 반대 벤더 검증을 대신하지 않는다.
-- **미완:** 반대 벤더 검증(Codex `gpt-6.1-sol`)이 남았다. Phase 2는 필수 통과 Phase라 이를 통과하기 전에는 Phase 3으로 넘어가지 않는다.
+- **반대 벤더 검증(Codex `gpt-6.1-sol`, `docs/reviews/A2.md`):** Critical 없음, Major 2·Minor 1건, D-3·D-4 위반 없음. 실행은 2/3회(1회차는 표준 입력 대기로 멈춰 무효, 2회차 85초 유효).
+  - Major 1(처리함): `/api/ps`에 `size_vram`이 없으면 거짓 `100% CPU`로 출력하던 것을 "알 수 없음"으로 바꿨다.
+  - Major 2(처리함): `/api/version`의 JSON root가 객체가 아니면(`null`·`[]`) 트레이스백으로 끝나던 것을 오류 문구와 종료 코드 1로 바꿨다.
+  - Minor 3(처리함): `version`이 null·빈 문자열·객체여도 성공하던 것을 오류로 바꿨다.
+  - 수정 뒤 `uv run pytest` 26개 통과. Critical이 없어 같은 검토를 다시 돌리지 않았다.
+- **Phase 2 닫음:** 완료 조건 충족, 미해결 Critical 없음. 다음은 Phase 3(요약 출력)이고 사용자 승인 뒤 시작한다.
 
 ### D-7 추가 (2026-10-04)
 
