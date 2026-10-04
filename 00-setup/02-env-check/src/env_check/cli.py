@@ -47,7 +47,7 @@ def gb(size):
 
 def main(argv=None):
     try:
-        client = ollama.Client(host=HOST, timeout=TIMEOUT)
+        client = ollama.Client(host=HOST, timeout=TIMEOUT, follow_redirects=False)
         version = get_version(client)
         models = get_models(client)
         loaded = get_loaded(client)

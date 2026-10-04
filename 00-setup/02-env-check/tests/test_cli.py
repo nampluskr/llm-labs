@@ -1,3 +1,5 @@
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
 
 import pytest
@@ -146,3 +148,37 @@ def test_main_loaded_model_without_memory_fields(monkeypatch, capsys):
     assert cli.main([]) == 0
     out = capsys.readouterr().out
     assert "알 수 없음" in out and "100% CPU" not in out
+
+
+def test_main_does_not_follow_redirects(monkeypatch, capsys):
+    """리다이렉트를 따라가면 허용한 세 엔드포인트(D-3) 밖으로 요청이 나간다."""
+    requested = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requested.append(self.path)
+            if self.path == "/api/version":
+                self.send_response(302)
+                self.send_header("Location", "/elsewhere")
+                self.end_headers()
+            else:
+                body = b'{"version":"0.1.0","models":[]}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setattr(cli, "HOST", f"http://127.0.0.1:{server.server_address[1]}")
+        assert cli.main([]) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert requested == ["/api/version"]
+    assert "오류" in capsys.readouterr().err
