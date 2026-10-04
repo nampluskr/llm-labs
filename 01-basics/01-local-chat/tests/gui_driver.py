@@ -1,6 +1,6 @@
 """실제 pywebview 창을 띄워 DOM을 조작·관찰한다. 사용: python gui_driver.py <client> <host> <scenario> [entry]
 시나리오: ok(두 질문) · stop(중단 버튼, 취소된 요청의 늦은 이벤트까지 관찰) · many(12번 연속 질문)
-         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · save·load·load_corrupt·load_over·load_lost(대화 저장·열기) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
+         · escape(HTML 이스케이프) · think·think_reopen(사고 과정 표시) · models(모델 전환·옵션) · save·load·load_corrupt·load_over·load_lost·load_early_lost·dialog_save·dialog_open·dialog_cancel(대화 저장·열기. dialog_*는 실제 네이티브 파일 대화상자) · bridge(브리지 없음·호출 거부) · late_reject(늦게 온 거부)
 entry를 주면 build()가 아니라 앱 진입점 local_chat.app_<client>.main(argv)로 창을 띄운다.
 결과를 JSON 한 줄로 stdout에 낸다. pytest(test_gui.py)가 서브프로세스로 돌린다."""
 
@@ -16,6 +16,76 @@ from local_chat.clients import CLIENTS
 from local_chat.webapp import build
 
 LAST = "document.querySelector('.msg.assistant:last-of-type')"
+
+
+def _dialog_helper():
+    """실제 파일 대화상자(공용 대화상자, 클래스 #32770)를 Windows API로 조작한다. Windows 전용."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    WM_SETTEXT, WM_COMMAND, WM_CLOSE = 0x000C, 0x0111, 0x0010
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def class_name(hwnd):
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, buf, 256)
+        return buf.value
+
+    def find_dialog(timeout):
+        end = time.time() + timeout
+        while time.time() < end:
+            found = []
+
+            def cb(hwnd, _):
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value == os.getpid() and user32.IsWindowVisible(hwnd) and class_name(hwnd) == "#32770":
+                    found.append(hwnd)
+                return True
+
+            user32.EnumWindows(enum_proc(cb), 0)
+            if found:
+                return found[0]
+            time.sleep(0.1)
+        return None
+
+    def children(hwnd):
+        out = []
+
+        def cb(h, _):
+            out.append((h, class_name(h)))
+            return True
+
+        user32.EnumChildWindows(hwnd, enum_proc(cb), 0)
+        return out
+
+    def act(path, log):
+        """대화상자가 뜨기를 기다렸다가 path를 입력하고 확인을 누른다. path가 None이면 닫는다(취소)."""
+        dlg = find_dialog(20)
+        log.append(bool(dlg))
+        if not dlg:
+            return
+        time.sleep(0.5)
+        if path is None:
+            user32.PostMessageW(dlg, WM_CLOSE, 0, 0)
+            return
+        edits = [h for h, c in children(dlg) if c == "Edit"]  # 파일 이름 입력칸
+        user32.SendMessageW(edits[0], WM_SETTEXT, 0, path)
+        time.sleep(0.3)
+        user32.PostMessageW(dlg, WM_COMMAND, 1, user32.GetDlgItem(dlg, 1))  # 저장·열기 버튼(ID 1)
+
+    return act
+
+
+def automate_dialog(path, log):
+    """백그라운드 스레드로 다음에 열릴 대화상자를 조작한다."""
+    import threading
+
+    thread = threading.Thread(target=_dialog_helper(), args=(path, log), daemon=True)
+    thread.start()
+    return thread
+
 SNAP = (
     "JSON.stringify({messages: document.querySelectorAll('.msg').length, input: document.getElementById('input').value, "
     "send_disabled: document.getElementById('send').disabled, stop_disabled: document.getElementById('stop').disabled, "
@@ -279,6 +349,55 @@ def drive(window, result, scenario):
             time.sleep(0.3)
             result["after"] = json.loads(js(window, "JSON.stringify({model: document.getElementById('model').value, numctx: document.getElementById('numctx').value, info: document.getElementById('info').textContent})"))
             result["ask"] = ask(window, "질문")
+        elif scenario in ("dialog_save", "dialog_open", "dialog_cancel"):
+            wait(window, "document.getElementById('save').disabled === false", 15)
+            bubbles = "JSON.stringify(Array.from(document.querySelectorAll('.msg')).map(m => [m.classList.contains('user') ? 'user' : 'assistant', m.textContent]))"
+            chosen = os.environ["GUI_DRIVER_DIALOG_PATH"]
+            log = []
+            if scenario == "dialog_save":
+                ask(window, "첫째 질문 😊")
+                ask(window, "둘째\n질문")
+                automate_dialog(chosen, log)
+                js(window, "document.getElementById('status').textContent = ''; document.getElementById('save').click(); 0")
+                result["saved"] = wait(window, "document.getElementById('status').textContent.includes('저장')", 30)
+                result["status"] = js(window, "document.getElementById('status').textContent")
+            elif scenario == "dialog_open":
+                automate_dialog(chosen, log)
+                js(window, "document.getElementById('status').textContent = ''; document.getElementById('open').click(); 0")
+                wait(window, "document.getElementById('status').textContent.length > 0", 30)
+                time.sleep(0.3)
+                result["status"] = js(window, "document.getElementById('status').textContent")
+                result["bubbles"] = json.loads(js(window, bubbles))
+                result["next"] = ask(window, "넷째 질문")
+            else:
+                ask(window, "지켜야 할 질문")
+                before = json.loads(js(window, bubbles))
+                statuses = []
+                for button in ("save", "open"):
+                    automate_dialog(None, log)  # 대화상자를 취소한다
+                    js(window, f"document.getElementById('status').textContent = ''; document.getElementById('{button}').click(); 0")
+                    wait(window, "document.getElementById('status').textContent.length > 0", 30)
+                    statuses.append(js(window, "document.getElementById('status').textContent"))
+                time.sleep(0.3)
+                result["statuses"] = statuses
+                result["before"] = before
+                result["bubbles"] = json.loads(js(window, bubbles))
+                result["controls"] = json.loads(js(window, "JSON.stringify({send: document.getElementById('send').disabled, save: document.getElementById('save').disabled, open: document.getElementById('open').disabled})"))
+            result["dialog_seen"] = log
+        elif scenario == "load_early_lost":
+            wait(window, "document.getElementById('save').disabled === false", 15)
+            bubbles = "JSON.stringify(Array.from(document.querySelectorAll('.msg')).map(m => [m.classList.contains('user') ? 'user' : 'assistant', m.textContent]))"
+            ask(window, "화면에 있던 질문")
+            # 서버의 열기는 아직 진행 중(대화상자 대기)인데 브리지 응답만 먼저 실패하는 것처럼 만든다
+            js(window, "window.__load = window.pywebview.api.load_chat; window.pywebview.api.load_chat = () => { window.__load(); return Promise.reject(new Error('lost')); }; 0")
+            js(window, "document.getElementById('status').textContent = ''; document.getElementById('open').click(); 0")
+            time.sleep(0.6)  # 서버는 아직 파일을 고르는 중이다
+            result["during"] = json.loads(js(window, "JSON.stringify({send: document.getElementById('send').disabled, open: document.getElementById('open').disabled, save: document.getElementById('save').disabled, status: document.getElementById('status').textContent, bubbles: Array.from(document.querySelectorAll('.msg')).map(m => m.textContent)})"))
+            wait(window, "!document.getElementById('send').disabled", 30)
+            time.sleep(0.3)
+            result["status"] = js(window, "document.getElementById('status').textContent")
+            result["bubbles"] = json.loads(js(window, bubbles))
+            result["next"] = ask(window, "넷째 질문")
         elif scenario in ("load_over", "load_lost"):
             wait(window, "document.getElementById('save').disabled === false", 15)
             bubbles = "JSON.stringify(Array.from(document.querySelectorAll('.msg')).map(m => [m.classList.contains('user') ? 'user' : 'assistant', m.textContent]))"
@@ -338,6 +457,7 @@ if __name__ == "__main__":
         window, api = build(CLIENTS[client_name](host=host))
         pick = os.environ.get("GUI_DRIVER_PICK")
         if pick:  # 파일 대화상자 대신 시험이 정한 경로를 쓴다
-            api._pick_path = lambda mode: pick
+            delay = float(os.environ.get("GUI_DRIVER_PICK_DELAY", "0"))  # 주면 경로를 고르는 데 그만큼 걸린다(느린 대화상자)
+            api._pick_path = lambda mode: (time.sleep(delay), pick)[1]
         webview.start(drive, (window, result, scenario))
     print("RESULT " + json.dumps(result))

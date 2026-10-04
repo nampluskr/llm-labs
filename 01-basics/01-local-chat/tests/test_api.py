@@ -608,7 +608,7 @@ def test_사고_과정만_오고_끝난_턴은_기록하지_않아_저장한_파
     fake.script = lambda h: send_lines(h, [chunk("", thinking="생각만 하고"), done_chunk(1, 1_000_000_000)])
     api = api_for(name)
     ask(api, "질문")  # 화면에는 정상 종료로 보인다
-    assert api.history() == {"messages": []}
+    assert api.history() == {"messages": [], "file_busy": False}
     path = tmp_path / "chat.json"
     assert api._save_to(str(path))["count"] == 0
     fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
@@ -643,19 +643,20 @@ def test_history는_서버가_가진_대화를_돌려주고_답변_중에는_Non
 
     api = api_for(name)
     ask(api, "첫 질문")
-    assert api.history() == {"messages": [{"role": "user", "content": "첫 질문"}, {"role": "assistant", "content": "답"}]}
+    assert api.history() == {"messages": [{"role": "user", "content": "첫 질문"}, {"role": "assistant", "content": "답"}], "file_busy": False}
     fake.script = script
     api.send("긴 답변")
     deadline = time.time() + 5
     while len(api._window.events) < 2 and time.time() < deadline:
         time.sleep(0.01)
-    assert api.history() == {"messages": None}
+    assert api.history() == {"messages": None, "file_busy": False}
     gate.set()
     api._session.join(10)
 
 
 @pytest.mark.parametrize("name", list(CLIENTS))
-def test_파일을_읽는_사이_질문이_시작되면_열기는_거절되고_진행_중인_대화를_바꾸지_않는다(fake, api_for, tmp_path, monkeypatch, name):
+def test_파일을_읽는_동안에는_질문과_모델_전환과_다른_파일_작업을_받지_않고_끝나면_복원이_온전하다(fake, api_for, tmp_path, monkeypatch, name):
+    """파일 작업이 도는 동안(대화상자가 열려 있는 동안 포함) 대화가 바뀔 수 있는 조작을 모두 막아 경합 자체를 없앤다."""
     from local_chat import conversation
 
     path = tmp_path / "chat.json"
@@ -675,17 +676,21 @@ def test_파일을_읽는_사이_질문이_시작되면_열기는_거절되고_�
     t = threading.Thread(target=lambda: out.update(api._load_from(str(path))))
     t.start()
     assert reading.wait(5)
-    assert api.send("읽는 중에 시작한 질문") == {"ok": True}  # 화면은 잠겨 있지만 Api는 막지 않는다
+    assert api.history() == {"messages": [], "file_busy": True}  # 서버가 파일 작업 중임을 알린다
+    assert api.send("읽는 중에 시작한 질문") == {"ok": False, "reason": "file"}
+    assert api.set_model("exaone3.5:7.8b")["reason"] == "file_busy" and fake.unloads == []
+    assert api._save_to(str(tmp_path / "other.json"))["reason"] == "file_busy" and not (tmp_path / "other.json").exists()
+    assert api._load_from(str(path))["reason"] == "file_busy"
     proceed.set()
     t.join(10)
-    assert out["ok"] is False and out["reason"] == "busy"  # 복원은 진행 중인 대화를 덮지 못한다
-    assert api._session.join(10)
-    assert api.history()["messages"][0] == {"role": "user", "content": "읽는 중에 시작한 질문"}  # 파일의 대화가 섞이지 않았다
-    assert len(api.history()["messages"]) == 2
+    assert out["ok"] is True and out["count"] == 2
+    assert api.history() == {"messages": out["messages"], "file_busy": False}  # 파일의 대화 그대로, 작업이 끝났다
+    assert api.send("끝난 뒤의 질문") == {"ok": True}
+    api._session.join(10)
 
 
 @pytest.mark.parametrize("name", list(CLIENTS))
-def test_저장하는_사이_질문이_시작돼도_저장한_파일은_그_시점의_대화다(fake, api_for, tmp_path, monkeypatch, name):
+def test_저장하는_동안에도_질문을_받지_않아_저장한_파일은_그_시점의_대화다(fake, api_for, tmp_path, monkeypatch, name):
     from local_chat import conversation
 
     api = api_for(name)
@@ -705,9 +710,72 @@ def test_저장하는_사이_질문이_시작돼도_저장한_파일은_그_시�
     t = threading.Thread(target=lambda: out.update(api._save_to(str(path))))
     t.start()
     assert writing.wait(5)
-    assert api.send("저장하는 중에 시작한 질문") == {"ok": True}
+    assert api.send("저장하는 중에 시작한 질문") == {"ok": False, "reason": "file"}
     proceed.set()
     t.join(10)
     assert out["ok"] is True and out["count"] == 2
-    assert [m["content"] for m in conversation.load_file(path)] == ["저장 전 질문", "답"]  # 진행 중이던 턴은 섞이지 않았다
+    assert [m["content"] for m in conversation.load_file(path)] == ["저장 전 질문", "답"]
+    assert len(fake.requests) == 1  # 저장 중에 시작하려던 질문은 서버까지 가지 않았다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_대화상자가_열려_있는_동안에도_파일_작업_중이다(fake, api_for, tmp_path, name):
+    api = api_for(name)
+    opened = threading.Event()
+    proceed = threading.Event()
+
+    def slow_dialog(mode):
+        opened.set()
+        proceed.wait(10)
+        return None  # 사용자가 취소했다
+
+    api._pick_path = slow_dialog
+    out = {}
+    t = threading.Thread(target=lambda: out.update(api.save_chat()))
+    t.start()
+    assert opened.wait(5)
+    assert api.history()["file_busy"] is True
+    assert api.send("대화상자가 열려 있는 동안") == {"ok": False, "reason": "file"}
+    proceed.set()
+    t.join(10)
+    assert out["reason"] == "cancelled" and api.history()["file_busy"] is False
+    assert api.send("취소한 뒤") == {"ok": True}
     api._session.join(10)
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_중복된_키가_든_파일은_거절하고_현재_대화를_지우지_않는다(fake, api_for, tmp_path, name):
+    api = api_for(name)
+    ask(api, "지켜야 할 질문")
+    before = api.history()["messages"]
+    cases = {
+        "messages 중복.json": '{"format":"local-chat","version":1,"messages":[{"role":"user","content":"질문"},{"role":"assistant","content":"답"}],"messages":[]}',
+        "role 중복.json": '{"messages":[{"role":"system","role":"user","content":"q"},{"role":"assistant","content":"a"}]}',
+        "content 중복.json": '{"messages":[{"role":"user","content":null,"content":"q"},{"role":"assistant","content":"a"}]}',
+        "version 중복.json": '{"version":2,"version":1,"messages":[]}',
+    }
+    for file_name, text in cases.items():
+        path = tmp_path / file_name
+        path.write_bytes(text.encode("utf-8"))
+        r = api._load_from(str(path))
+        assert r["ok"] is False and "같은 키" in r["message"], file_name
+        assert api.history()["messages"] == before, file_name  # 대화가 비워지거나 바뀌지 않았다
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_읽을_수_없는_크기가_될_대화는_저장하지_않고_기존_파일을_보존한다(fake, api_for, tmp_path, monkeypatch, name):
+    """저장은 되는데 다시 열 수 없는 파일이 생기면 안 된다. 열기의 크기 한도와 같은 한도를 저장에도 건다."""
+    from local_chat import conversation
+
+    api = api_for(name)
+    ask(api, "질문")
+    path = tmp_path / "chat.json"
+    assert api._save_to(str(path))["ok"] is True
+    before = path.read_bytes()
+    monkeypatch.setattr(conversation, "MAX_BYTES", len(before) - 1)  # 같은 대화의 저장 결과가 한도를 넘는다
+    r = api._save_to(str(path))
+    assert r["ok"] is False and "너무 커서" in r["message"]
+    assert path.read_bytes() == before and [p.name for p in tmp_path.iterdir()] == ["chat.json"]
+    monkeypatch.setattr(conversation, "MAX_BYTES", len(before))
+    assert api._save_to(str(path))["ok"] is True  # 한도 안이면 저장되고
+    assert api._load_from(str(path))["ok"] is True  # 저장한 파일은 항상 다시 열 수 있다

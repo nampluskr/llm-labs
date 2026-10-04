@@ -25,10 +25,24 @@ class ConversationError(Exception):
     """파일을 저장·불러오지 못했다. 메시지는 화면에 그대로 보인다."""
 
 
+class _DuplicateKey(ValueError):
+    """JSON 객체에 같은 키가 두 번 나온다."""
+
+
+def _no_duplicate_keys(pairs):
+    """json.loads는 중복 키를 조용히 마지막 값으로 덮는다. 검증이 보지 못하는 값이 쓰이지 않게 거절한다."""
+    keys = [k for k, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise _DuplicateKey(next(k for k in keys if keys.count(k) > 1))
+    return dict(pairs)
+
+
 def parse(text: str) -> list[dict]:
     """JSON 문자열에서 검증된 messages를 꺼낸다. 올바르지 않으면 ConversationError."""
     try:
-        data = json.loads(text)
+        data = json.loads(text, object_pairs_hook=_no_duplicate_keys)
+    except _DuplicateKey as e:
+        raise ConversationError(f"같은 키가 두 번 나온다: {e.args[0]!r}") from None
     except (ValueError, RecursionError) as e:  # 깨진 JSON, 너무 깊게 중첩된 JSON
         raise ConversationError(f"JSON이 아니거나 손상된 파일이다 ({type(e).__name__})") from None
     if isinstance(data, dict):
@@ -84,9 +98,12 @@ def save_file(path: str | os.PathLike, messages: list[dict], model: str | None =
     target = Path(path)
     tmp_name = None
     try:
+        data = dumps(messages, model).encode("utf-8")  # 인코딩을 명시한다(Windows 기본은 cp949). 쓸 수 없는 문자는 여기서 UnicodeError
+        if len(data) > MAX_BYTES:  # 읽을 수 없는 크기의 파일을 만들지 않는다(저장은 되는데 다시 열 수 없는 파일이 된다)
+            raise ConversationError(f"대화가 너무 커서 저장할 수 없다(파일 최대 {MAX_BYTES // (1024 * 1024)}MB)")
         fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:  # 인코딩을 명시한다(Windows 기본은 cp949)
-            f.write(dumps(messages, model))
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_name, target)

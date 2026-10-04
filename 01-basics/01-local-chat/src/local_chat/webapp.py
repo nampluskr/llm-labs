@@ -27,6 +27,7 @@ class Api:
         self._config_lock = threading.Lock()  # 모델 전환·옵션 변경을 한 번에 하나씩
         self._state_lock = threading.Lock()  # 전환 표시와 질문 시작을 서로 배타적으로 만든다(짧게만 쥔다)
         self._switching = False  # 모델 전환 중(이전 모델 내리기 포함)에는 질문을 받지 않는다
+        self._file_busy = False  # 대화 저장·열기 중(대화상자가 열려 있는 동안 포함)에는 질문과 모델 전환을 받지 않는다
         self._pick_path = self._dialog  # (mode) -> 경로 또는 None. 시험에서는 대화상자 대신 경로를 돌려주는 함수로 바꾼다
         self._worker_wait = 3.0  # 전환할 때 중단된 이전 요청의 작업 스레드가 끝나기를 기다리는 시간(초)
         # 설치된 모델 전체(/api/tags). 현재 모델이 목록에 없으면(미설치이거나 목록을 못 받음) 맨 앞에 둔다
@@ -49,6 +50,8 @@ class Api:
         with self._state_lock:
             if self._switching:
                 return {"ok": False, "reason": "switching"}
+            if self._file_busy:
+                return {"ok": False, "reason": "file"}
             return self._session.send(text)
 
     def stop(self):
@@ -79,6 +82,8 @@ class Api:
                     return {"ok": False, "reason": "not_chat", "message": "채팅할 수 없는 모델이다(임베딩 모델)"}
             previous_think = self._session.think
             with self._state_lock:
+                if self._file_busy:
+                    return {"ok": False, "reason": "file_busy", "message": "파일을 저장하거나 여는 중에는 바꿀 수 없다"}
                 result = self._session.configure(model=name, think=entry["thinking"])
                 if not result["ok"]:
                     return {**result, "message": "답변 중에는 바꿀 수 없다"}
@@ -126,27 +131,35 @@ class Api:
             return None
         return result if isinstance(result, str) else result[0]
 
-    def _file_gate(self):
-        """저장·열기를 할 수 없는 상태면 거절 응답을, 아니면 None."""
-        if self._switching:
-            return {"ok": False, "reason": "switching", "message": "모델을 바꾸는 중에는 저장하거나 열 수 없다"}
-        return None
+    def _file_op(self, fn):
+        """저장·열기를 한 번에 하나씩, 모델 전환과 겹치지 않게 돌린다. 도는 동안(대화상자가 열려 있는 동안 포함) 질문과 모델 전환은 거절된다."""
+        with self._state_lock:
+            if self._switching:
+                return {"ok": False, "reason": "switching", "message": "모델을 바꾸는 중에는 저장하거나 열 수 없다"}
+            if self._file_busy:
+                return {"ok": False, "reason": "file_busy", "message": "다른 저장·열기를 처리하는 중이다"}
+            self._file_busy = True
+        try:
+            return fn()
+        finally:
+            with self._state_lock:
+                self._file_busy = False
 
     def save_chat(self):
         """대화상자로 경로를 물어 지금까지 끝난 대화를 JSON 파일로 저장한다. 답변 중에는 거절한다."""
-        gate = self._file_gate()
-        if gate:
-            return gate
+        return self._file_op(self._save_flow)
+
+    def _save_flow(self):
         path = self._pick_path("save")
         if not path:
             return {"ok": False, "reason": "cancelled", "message": "저장을 취소했다"}
-        return self._save_to(path)
+        return self._write_chat(path)
 
     def _save_to(self, path):
         """경로를 알고 있을 때의 저장. 시험에서 대화상자 없이 쓴다. 밑줄로 시작해 JS에는 공개하지 않는다(임의 경로를 받지 않는다)."""
-        gate = self._file_gate()
-        if gate:
-            return gate
+        return self._file_op(lambda: self._write_chat(path))
+
+    def _write_chat(self, path):
         messages = self._session.export_messages()  # 대화상자를 여는 사이에 바뀐 것까지 담도록 경로를 받은 뒤에 읽는다
         if messages is None:
             return {"ok": False, "reason": "busy", "message": "답변 중에는 저장할 수 없다"}
@@ -158,23 +171,19 @@ class Api:
 
     def load_chat(self):
         """대화상자로 경로를 물어 JSON 파일의 대화로 현재 대화를 통째로 바꾼다. 파일이 올바르지 않으면 현재 대화는 그대로다. 답변 중에는 거절한다."""
-        gate = self._file_gate()
-        if gate:
-            return gate
+        return self._file_op(self._load_flow)
+
+    def _load_flow(self):
         path = self._pick_path("open")
         if not path:
             return {"ok": False, "reason": "cancelled", "message": "열기를 취소했다"}
-        return self._load_from(path)
-
-    def history(self):
-        """지금 서버가 가진 대화(끝난 턴의 질문·답). 열기 응답이 화면에 도착하지 못했을 때 화면을 맞추는 데 쓴다. 답변 중이면 None."""
-        return {"messages": self._session.export_messages()}
+        return self._read_chat(path)
 
     def _load_from(self, path):
         """경로를 알고 있을 때의 열기. 시험에서 대화상자 없이 쓴다. 밑줄로 시작해 JS에는 공개하지 않는다."""
-        gate = self._file_gate()
-        if gate:
-            return gate
+        return self._file_op(lambda: self._read_chat(path))
+
+    def _read_chat(self, path):
         try:
             messages = conversation.load_file(path)  # 먼저 검증한다. 실패하면 아래 복원까지 가지 않는다
         except conversation.ConversationError as e:
@@ -183,6 +192,11 @@ class Api:
         if not result["ok"]:
             return {**result, "message": "답변 중에는 열 수 없다"}
         return {"ok": True, "path": str(path), "count": len(messages), "messages": messages}
+
+    def history(self):
+        """지금 서버가 가진 대화(끝난 턴의 질문·답)와 파일 작업 중인지. 저장·열기 응답이 화면에 도착하지 못했을 때 화면을 맞추는 데 쓴다.
+        답변 중이면 messages는 None이다."""
+        return {"messages": self._session.export_messages(), "file_busy": self._file_busy}
 
     def info(self):
         options = self._session.options

@@ -137,7 +137,7 @@ def test_없는_파일_폴더_권한이_없는_경우는_ConversationError(tmp_p
 def test_너무_큰_파일은_읽지_않는다(tmp_path, monkeypatch):
     monkeypatch.setattr(conversation, "MAX_BYTES", 1000)
     path = tmp_path / "big.json"
-    save_file(path, [u("가" * 2000), a("답")])
+    path.write_text(json.dumps([u("가" * 2000), a("답")], ensure_ascii=False), encoding="utf-8")  # 저장은 한도를 넘으면 거절하므로 직접 쓴다
     with pytest.raises(ConversationError, match="너무 크다"):
         load_file(path)
 
@@ -209,3 +209,51 @@ def test_format이_다르면_거절하고_없거나_같으면_받는다():
     for fmt in ("other-app", "", None, 1, ["local-chat"]):
         with pytest.raises(ConversationError, match="format"):
             parse(json.dumps({"format": fmt, "messages": SAMPLE[:2]}))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"messages": [], "messages": []}',
+        '{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}], "messages": []}',
+        '{"messages": [{"role": "system", "role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}',
+        '{"messages": [{"role": "user", "content": null, "content": "q"}, {"role": "assistant", "content": "a"}]}',
+        '{"version": 2, "version": 1, "messages": []}',
+        '[{"role": "user", "content": "q", "content": "r"}, {"role": "assistant", "content": "a"}]',
+    ],
+)
+def test_중복된_키는_마지막_값으로_덮어쓰지_않고_거절한다(text):
+    with pytest.raises(ConversationError, match="같은 키"):
+        parse(text)
+
+
+def test_저장_결과가_읽기_한도를_넘으면_저장하지_않고_넘지_않으면_항상_다시_열_수_있다(tmp_path, monkeypatch):
+    path = tmp_path / "chat.json"
+    save_file(path, SAMPLE, "qwen3:8b")
+    size = path.stat().st_size
+    monkeypatch.setattr(conversation, "MAX_BYTES", size)
+    path.unlink()
+    save_file(path, SAMPLE, "qwen3:8b")  # 한도와 같으면 저장되고
+    assert load_file(path) == SAMPLE  # 다시 열린다
+    before = path.read_bytes()
+    monkeypatch.setattr(conversation, "MAX_BYTES", size - 1)
+    with pytest.raises(ConversationError, match="너무 커서"):
+        save_file(path, SAMPLE, "qwen3:8b")  # 한도를 넘으면 거절하고
+    assert path.read_bytes() == before and [p.name for p in tmp_path.iterdir()] == ["chat.json"]  # 기존 파일과 폴더가 그대로다
+
+
+def test_열기_한도_바로_아래의_파일을_복원해_다시_저장해도_열_수_있거나_저장이_거절된다(tmp_path):
+    """한도 근처의 파일은 들여쓰기·메타데이터가 붙는 저장 결과가 한도를 넘을 수 있다. 그 경우 조용히 읽을 수 없는 파일을 만들지 않는다."""
+    big = "q" * (conversation.MAX_BYTES - 120)  # 압축 JSON 파일이 한도 바로 아래가 되게 한다
+    raw = json.dumps([{"role": "user", "content": big}, {"role": "assistant", "content": "a"}], separators=(",", ":"))
+    src = tmp_path / "near_limit.json"
+    src.write_text(raw, encoding="utf-8")
+    assert src.stat().st_size <= conversation.MAX_BYTES
+    messages = load_file(src)
+    dst = tmp_path / "saved.json"
+    try:
+        save_file(dst, messages)
+    except ConversationError as e:
+        assert "너무 커서" in str(e) and not dst.exists()  # 저장이 거절됐다
+    else:
+        assert load_file(dst) == messages  # 저장됐다면 다시 열린다

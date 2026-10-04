@@ -205,7 +205,8 @@
     log.removeChild(bubble); log.removeChild(userEl);
     current = null; thinkEl = null; input.value = text; setBusy(false);
     statusEl.textContent = r.reason === "busy" ? "이전 답변을 처리 중입니다."
-      : r.reason === "switching" ? "모델을 바꾸는 중입니다. 잠시 뒤에 다시 보내세요." : "보내지 못했습니다. 다시 시도하세요.";
+      : r.reason === "switching" ? "모델을 바꾸는 중입니다. 잠시 뒤에 다시 보내세요."
+      : r.reason === "file" ? "대화를 저장하거나 여는 중입니다. 잠시 뒤에 다시 보내세요." : "보내지 못했습니다. 다시 시도하세요.";
   }
 
   document.getElementById("form").addEventListener("submit", (e) => { e.preventDefault(); send(); });
@@ -313,11 +314,33 @@
     try {
       r = await call();
     } catch (e) {
-      r = { ok: false, reason: "bridge", message: "처리하지 못했습니다." };   // 응답이 오지 않았다. 서버에서는 처리됐을 수 있다
+      // 응답이 오지 않았다. 서버에서는 처리가 아직 진행 중이거나 끝났을 수 있다. 잠금을 풀지 않고 호출한 쪽이 서버 상태를 확인한다
+      return { ok: false, reason: "bridge", message: "처리하지 못했습니다." };
     }
     statusEl.textContent = r.ok ? okMessage(r) : (r.message || "처리하지 못했습니다.");
     setLocked(false);
     return r;
+  }
+
+  async function settleAfterLostResponse() {
+    // 서버의 파일 작업이 끝나기를 기다렸다가(대화상자가 열려 있을 수 있다. 최대 약 5분) 서버가 가진 대화를 읽는다.
+    // 끝나기 전에 읽으면 곧 바뀔 대화를 읽게 된다. 서버 상태를 알 수 없으면 null
+    statusEl.textContent = "응답이 오지 않아 서버 상태를 확인하는 중입니다…";
+    for (let i = 0; i < 600; i++) {
+      try {
+        const h = await window.pywebview.api.history();
+        if (!h.file_busy) return h;
+      } catch (e) {
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    return null;
+  }
+
+  function lockForUnknownState() {
+    setLocked(true);   // 풀지 않는다: 화면과 다른 대화로 질문이 나가지 않게
+    statusEl.textContent = "서버 상태를 확인하지 못했습니다. 앱을 다시 여세요.";
   }
 
   function renderMessages(messages) {   // 화면의 대화를 messages로 다시 그린다
@@ -327,9 +350,14 @@
     for (const m of messages) addMsg(m.role === "user" ? "user" : "assistant", m.content);
   }
 
-  saveBtn.addEventListener("click", () => {
+  saveBtn.addEventListener("click", async () => {
     if (locked || busy || !bridgeReady()) return;
-    runFile(() => window.pywebview.api.save_chat(), (r) => r.count + "개 메시지를 저장했습니다: " + baseName(r.path));
+    const r = await runFile(() => window.pywebview.api.save_chat(), (r) => r.count + "개 메시지를 저장했습니다: " + baseName(r.path));
+    if (r.reason !== "bridge") return;
+    const h = await settleAfterLostResponse();
+    if (!h) return lockForUnknownState();
+    statusEl.textContent = "응답이 오지 않아 저장 결과를 확인하지 못했습니다. 다시 저장해 보세요.";
+    setLocked(false);
   });
 
   openBtn.addEventListener("click", async () => {
@@ -338,14 +366,12 @@
     if (r.ok) {
       renderMessages(r.messages);   // 불러온 대화로 화면을 다시 그린다
     } else if (r.reason === "bridge") {
-      // 응답이 오지 않았다. 서버에서 열기가 끝났을 수 있으니 서버가 실제로 가진 대화로 화면을 맞춘다
-      try {
-        const h = await window.pywebview.api.history();
-        if (h.messages) renderMessages(h.messages);
-      } catch (e) {
-        setLocked(true);
-        statusEl.textContent = "서버 상태를 확인하지 못했습니다. 앱을 다시 여세요.";
-      }
+      // 응답이 오지 않았다. 서버의 열기가 끝나기를 기다린 뒤 서버가 실제로 가진 대화로 화면을 맞춘다
+      const h = await settleAfterLostResponse();
+      if (!h || !h.messages) return lockForUnknownState();
+      renderMessages(h.messages);
+      statusEl.textContent = "응답이 오지 않아 서버의 대화로 화면을 맞췄습니다.";
+      setLocked(false);
     }   // 그 밖의 실패(파일이 올바르지 않음 등)는 서버 대화가 그대로이므로 화면도 그대로다
   });
 

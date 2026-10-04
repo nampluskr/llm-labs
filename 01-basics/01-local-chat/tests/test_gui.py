@@ -12,9 +12,16 @@ from fake_ollama import chunk, done_chunk, send_body, send_headers, send_lines
 from local_chat.clients import CLIENTS
 
 
-def run_driver(name, host, scenario="ok", entry=False, pick=None):
+def run_driver(name, host, scenario="ok", entry=False, pick=None, pick_delay=None, dialog_path=None):
     cmd = [sys.executable, "tests/gui_driver.py", name, host, scenario] + (["entry"] if entry else [])
-    env = {**os.environ, **({"GUI_DRIVER_PICK": str(pick)} if pick else {})}
+    extra = {}
+    if pick:
+        extra["GUI_DRIVER_PICK"] = str(pick)
+    if pick_delay is not None:
+        extra["GUI_DRIVER_PICK_DELAY"] = str(pick_delay)
+    if dialog_path:
+        extra["GUI_DRIVER_DIALOG_PATH"] = str(dialog_path)
+    env = {**os.environ, **extra}
     p = subprocess.run(cmd, capture_output=True, timeout=90, env=env)
     out = p.stdout.decode("utf-8", "replace")
     line = next((l for l in out.splitlines() if l.startswith("RESULT ")), None)
@@ -391,3 +398,68 @@ def test_창은_열기_응답이_끊겨도_서버가_가진_대화로_화면을_
     # 서버에서는 열기가 끝났으므로 화면도 파일의 대화여야 한다(화면에 옛 대화가 남으면 서버와 어긋난다)
     assert r["bubbles"] == [["user", "파일의 질문"], ["assistant", "파일의 답"]]
     assert r["controls"] == {"send": False, "open": False}
+
+
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창은_열기_응답이_일찍_끊겨도_서버의_열기가_끝날_때까지_잠가_두었다가_서버의_대화로_맞춘다(fake, tmp_path, name):
+    """서버의 열기가 아직 진행 중일 때(대화상자 대기·파일 읽기) 응답만 먼저 끊기면, 그때 서버 대화(옛 대화)로 화면을 맞추면 곧 어긋난다."""
+    from local_chat import conversation
+
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    path = tmp_path / "파일의 대화.json"
+    file_messages = [{"role": "user", "content": "파일의 질문"}, {"role": "assistant", "content": "파일의 답"}]
+    conversation.save_file(path, file_messages)
+    fake.requests.clear()
+    r = run_driver(name, fake.host, "load_early_lost", pick=path, pick_delay=1.5)
+    assert "driver_error" not in r, r
+    # 서버가 아직 파일을 고르는 동안: 잠겨 있고 화면은 옛 대화 그대로다(서버 대화가 곧 바뀔 것이므로 지금 맞추지 않는다)
+    assert r["during"]["send"] is True and r["during"]["open"] is True and r["during"]["save"] is True
+    assert r["during"]["bubbles"] == ["화면에 있던 질문", "답"] and "확인하는 중" in r["during"]["status"]
+    # 서버의 열기가 끝난 뒤: 화면 = 서버 = 파일의 대화
+    assert r["bubbles"][:2] == [["user", "파일의 질문"], ["assistant", "파일의 답"]] and len(r["bubbles"]) == 2
+    assert "서버의 대화로 화면을 맞췄습니다" in r["status"]
+    contents = [m["content"] for m in fake.requests[-1]["messages"]]
+    assert contents[1:] == ["파일의 질문", "파일의 답", "넷째 질문"]  # 다음 질문의 문맥도 화면과 같다
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="네이티브 파일 대화상자 조작은 Windows API를 쓴다")
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창에서_실제_파일_대화상자로_저장하고_다른_창에서_실제_대화상자로_열면_복원된다(fake, tmp_path, name):
+    """파일 대화상자를 우회하지 않는다. 실제 네이티브 대화상자가 뜨고, Windows API로 한글 경로를 입력해 확인을 누른다."""
+    from local_chat import conversation
+
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    folder = tmp_path / "대화 저장 폴더"
+    folder.mkdir()
+    path = folder / "실제 대화상자 😊.json"
+    saved = run_driver(name, fake.host, "dialog_save", dialog_path=path)
+    assert "driver_error" not in saved, saved
+    assert saved["dialog_seen"] == [True]  # 실제 대화상자가 떴다
+    assert saved["saved"] is True and saved["status"] == "4개 메시지를 저장했습니다: 실제 대화상자 😊.json"
+    assert conversation.load_file(path) == [
+        {"role": "user", "content": "첫째 질문 😊"},
+        {"role": "assistant", "content": "답"},
+        {"role": "user", "content": "둘째\n질문"},
+        {"role": "assistant", "content": "답"},
+    ]
+    fake.requests.clear()
+    opened = run_driver(name, fake.host, "dialog_open", dialog_path=path)
+    assert "driver_error" not in opened, opened
+    assert opened["dialog_seen"] == [True]
+    assert opened["status"] == "4개 메시지를 불러왔습니다: 실제 대화상자 😊.json"
+    assert opened["bubbles"] == [["user", "첫째 질문 😊"], ["assistant", "답"], ["user", "둘째\n질문"], ["assistant", "답"]]
+    contents = [m["content"] for m in fake.requests[-1]["messages"]]
+    assert contents[1:] == ["첫째 질문 😊", "답", "둘째\n질문", "답", "넷째 질문"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="네이티브 파일 대화상자 조작은 Windows API를 쓴다")
+@pytest.mark.parametrize("name", list(CLIENTS))
+def test_창에서_실제_파일_대화상자를_취소하면_저장도_열기도_하지_않고_대화는_그대로다(fake, tmp_path, name):
+    fake.script = lambda h: send_lines(h, [chunk("답"), done_chunk(1, 1_000_000_000)])
+    r = run_driver(name, fake.host, "dialog_cancel", dialog_path=tmp_path / "쓰이면_안_되는_파일.json")
+    assert "driver_error" not in r, r
+    assert r["dialog_seen"] == [True, True]  # 저장·열기 대화상자가 각각 실제로 떴다
+    assert r["statuses"] == ["저장을 취소했다", "열기를 취소했다"]
+    assert r["bubbles"] == r["before"] == [["user", "지켜야 할 질문"], ["assistant", "답"]]
+    assert r["controls"] == {"send": False, "save": False, "open": False}  # 취소한 뒤 다시 쓸 수 있다
+    assert not (tmp_path / "쓰이면_안_되는_파일.json").exists()
