@@ -4,7 +4,17 @@
 
 ## 계획된 작업
 
-(아직 없음. INIT 승인 후 Phase 1부터 기록한다.)
+### Phase 1 — 파이썬 환경 (2026-10-04) — 검증 대기
+
+- **무엇을:** 이 연습 폴더에 uv 프로젝트를 만들었다(`uv init --bare`, `uv python pin 3.13`, `uv add ollama pywebview jupyter ipykernel`). 의존성을 `uv sync`로 설치했다.
+- **결과:** `pyproject.toml`·`uv.lock`·`.python-version`(3.13)이 생겼다. `.venv`는 저장소 `.gitignore`에 걸려 커밋하지 않는다. 설치된 Python은 3.13.14다.
+- **검증:**
+  - `uv sync`가 오류 없이 끝났다(117 패키지 해석, 종료 코드 0).
+  - pywebview: 창을 띄워 `loaded` 이벤트가 발생하는 것을 확인하고 1.5초 뒤 닫았다(백엔드 winforms, 종료 코드 0).
+  - jupyter: `nbconvert --execute`로 셀 한 개를 `python3` 커널에서 실행했고 출력 `3.13.14 2`를 확인했다.
+  - 위 두 확인용 스크립트는 연습 폴더 밖 임시 폴더에서 돌렸고 연습 폴더에는 남기지 않았다.
+- **특이사항:** `uv init --bare`는 `.python-version`을 만들지 않아 처음에 환경이 3.14.6으로 잡혔다. D-2에 어긋나 `uv python pin 3.13`으로 고정하고 `.venv`를 다시 만들었다.
+- **미완:** PLAN의 적대적 검증은 아직 하지 않았다. Phase 1에는 제품 소스 파일이 없어(설정 파일뿐) 검토자에게 줄 대상이 없다. 생략 여부는 사용자 승인을 받는다.
 
 ## 계획 외 개선
 
