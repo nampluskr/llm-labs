@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prompt-playground</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --text: #1d2229; --muted: #66707d; --line: #d8dde3;
+  --accent: #2f6fed; --accent-text: #fff; --danger: #c0392b; --run: #b7791f;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14171b; --panel: #1d2127; --text: #e6e9ed; --muted: #9aa4b0; --line: #343b44; --accent: #5b8def; --danger: #ef6b5b; --run: #e0a93c; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, "Malgun Gothic", sans-serif; }
+header { padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; gap: 12px; align-items: baseline; }
+header h1 { margin: 0; font-size: 16px; }
+header span { color: var(--muted); }
+main { padding: 16px; display: grid; gap: 16px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+textarea, input { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+textarea { resize: vertical; min-height: 64px; }
+.rows { display: grid; gap: 8px; margin-top: 8px; }
+.row { display: grid; grid-template-columns: 24px 90px 90px 90px 1fr 32px; gap: 8px; align-items: end; }
+.row .no { color: var(--muted); padding-bottom: 8px; text-align: center; }
+button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+.bar { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+#status { color: var(--muted); }
+#status.error { color: var(--danger); }
+#results { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, 1fr); gap: 12px; overflow-x: auto; align-items: start; }
+.col { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-width: 0; }
+.col h3 { margin: 0; padding: 8px 10px; font-size: 13px; border-bottom: 1px solid var(--line); }
+.col .params { padding: 6px 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); word-break: break-word; }
+.col .stats { padding: 6px 10px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.col .body { padding: 10px; white-space: pre-wrap; word-break: break-word; }
+.col.running .stats { color: var(--run); }
+.col.failed .body { color: var(--danger); }
+details { padding: 0 10px 8px; color: var(--muted); }
+details pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; font: inherit; max-height: 200px; overflow: auto; }
+@media (max-width: 700px) {
+  .row { grid-template-columns: 24px 1fr 1fr 1fr 32px; }
+  .row .system { grid-column: 2 / 5; }
+}
+</style>
+</head>
+<body>
+<header><h1>prompt-playground</h1><span id="model"></span></header>
+<main>
+  <section>
+    <label for="prompt">프롬프트 (모든 변형이 같은 프롬프트를 쓴다)</label>
+    <textarea id="prompt">사과를 한 문장으로 설명해 줘.</textarea>
+    <div class="rows" id="rows"></div>
+    <div class="bar">
+      <button id="add">변형 추가</button>
+      <button id="run" class="primary">실행</button>
+      <span id="status"></span>
+    </div>
+  </section>
+  <div id="results" aria-live="polite"></div>
+</main>
+<script>
+let maxVariants = 6, running = false, total = 0;
+const $ = (id) => document.getElementById(id);
+const defaults = [{ temperature: 0.2, top_p: 0.9, seed: 1, system: "" }, { temperature: 1.0, top_p: 0.9, seed: 1, system: "" }];
+
+function addRow(v) {
+  if ($("rows").children.length >= maxVariants) return;
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<div class="no"></div>
+    <div><label>temperature</label><input class="t" type="number" step="0.1" min="0" max="2"></div>
+    <div><label>top_p</label><input class="p" type="number" step="0.05" min="0.05" max="1"></div>
+    <div><label>seed</label><input class="s" type="number" step="1"></div>
+    <div class="system"><label>시스템 프롬프트</label><input class="y" type="text"></div>
+    <button class="del" title="삭제">×</button>`;
+  row.querySelector(".t").value = v.temperature;
+  row.querySelector(".p").value = v.top_p;
+  row.querySelector(".s").value = v.seed;
+  row.querySelector(".y").value = v.system;
+  row.querySelector(".del").onclick = () => { if ($("rows").children.length > 1) { row.remove(); renumber(); } };
+  $("rows").appendChild(row);
+  renumber();
+}
+function renumber() {
+  [...$("rows").children].forEach((r, i) => (r.querySelector(".no").textContent = i + 1));
+  $("add").disabled = running || $("rows").children.length >= maxVariants;
+}
+function readVariants() {
+  return [...$("rows").children].map((r) => ({
+    temperature: r.querySelector(".t").value, top_p: r.querySelector(".p").value,
+    seed: r.querySelector(".s").value, system: r.querySelector(".y").value,
+  }));
+}
+function setStatus(text, isError) { $("status").textContent = text; $("status").className = isError ? "error" : ""; }
+function setRunning(on) {
+  running = on;
+  $("run").disabled = on;
+  document.querySelectorAll("#rows input, #rows .del, #prompt").forEach((e) => (e.disabled = on));
+  renumber();
+}
+function describe(v) {
+  return `temperature ${v.temperature} · top_p ${v.top_p} · seed ${v.seed}` + (v.system ? ` · 시스템: ${v.system}` : "");
+}
+function makeColumn(i, v) {
+  const c = document.createElement("div");
+  c.className = "col" + (i === 0 ? " running" : "");
+  c.id = "col" + i;
+  const h = document.createElement("h3"); h.textContent = `#${i + 1}`;
+  const p = document.createElement("div"); p.className = "params"; p.textContent = describe(v);
+  const s = document.createElement("div"); s.className = "stats"; s.textContent = i === 0 ? "실행 중…" : "대기";
+  const b = document.createElement("div"); b.className = "body";
+  c.append(h, p, s, b);
+  return c;
+}
+async function run() {
+  const variants = readVariants();
+  // 결과 이벤트가 열보다 먼저 도착하지 않도록 열을 먼저 만들고 실행을 요청한다. 거절되면 이전 열로 되돌린다
+  const previous = [...$("results").children];
+  total = variants.length;
+  $("results").replaceChildren(...variants.map((v, i) => makeColumn(i, {
+    temperature: parseFloat(v.temperature), top_p: parseFloat(v.top_p), seed: parseInt(v.seed, 10), system: v.system,
+  })));
+  setRunning(true);
+  setStatus(`0/${total} 완료`);
+  const r = await window.pywebview.api.run($("prompt").value, variants);
+  if (!r.ok) {
+    $("results").replaceChildren(...previous);
+    setRunning(false);
+    setStatus(r.reason, true);
+  }
+}
+window.onRunEvent = (e) => {
+  if (e.type === "result") {
+    const c = $("col" + e.index), r = e.result;
+    if (!c) return;
+    c.classList.remove("running");
+    c.querySelector(".params").textContent = describe(r.variant);
+    if (r.error) {
+      c.classList.add("failed");
+      c.querySelector(".stats").textContent = `실패 · ${r.elapsed_s}초`;
+      c.querySelector(".body").textContent = r.error;
+    } else {
+      c.querySelector(".stats").textContent = `${r.eval_count ?? "?"}토큰 · ${r.elapsed_s}초`;
+      c.querySelector(".body").textContent = r.response;
+      if (r.thinking) {
+        const d = document.createElement("details");
+        const sum = document.createElement("summary"); sum.textContent = "사고 과정";
+        const pre = document.createElement("pre"); pre.textContent = r.thinking;
+        d.append(sum, pre); c.appendChild(d);
+      }
+    }
+    const next = $("col" + (e.index + 1));
+    if (next) { next.classList.add("running"); next.querySelector(".stats").textContent = "실행 중…"; }
+    setStatus(`${e.index + 1}/${total} 완료`);
+  } else if (e.type === "done") {
+    setRunning(false);
+    setStatus(`완료 · 저장: ${e.saved}`);
+  } else if (e.type === "error") {
+    setRunning(false);
+    setStatus(e.message, true);
+  }
+};
+$("add").onclick = () => addRow({ temperature: 0.7, top_p: 0.9, seed: 1, system: "" });
+$("run").onclick = run;
+window.addEventListener("pywebviewready", async () => {
+  const info = await window.pywebview.api.info();
+  maxVariants = info.max_variants;
+  $("model").textContent = info.model;
+  renumber();
+});
+defaults.forEach(addRow);
+</script>
+</body>
+</html>
