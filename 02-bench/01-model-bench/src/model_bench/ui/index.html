@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>model-bench</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --mute:#666; --line:#ddd; --accent:#2563eb; --bad:#c0392b; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16181c; --fg:#e6e6e6; --mute:#9aa0a6; --line:#33363b; --accent:#6ea0ff; --bad:#ff7a6b; } }
+  body { margin:0; padding:16px 20px; background:var(--bg); color:var(--fg); font:14px/1.5 "Segoe UI","Malgun Gothic",sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; } .sub { color:var(--mute); margin-bottom:12px; }
+  button { font:inherit; padding:6px 14px; border:1px solid var(--line); border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  #status { margin-left:12px; color:var(--mute); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; }
+  th, td { padding:6px 10px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child, th:last-child, td:last-child { text-align:left; }
+  th { color:var(--mute); font-weight:600; }
+  .over { color:var(--bad); font-weight:600; }
+  .charts { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .chart { height:340px; min-width:0; }
+  .note { color:var(--mute); font-size:12px; margin-top:6px; }
+</style>
+</head>
+<body>
+<h1>model-bench</h1>
+<div class="sub">받은 모델별 생성 속도(tok/s)와 VRAM. 첫 실행값은 평균에서 뺀다.</div>
+<button id="run" disabled>측정 실행</button><span id="status"></span>
+<div id="empty" class="note" hidden>저장된 결과가 없다. "측정 실행"을 누르면 받은 모델 전부를 측정한다(수 분~수십 분).</div>
+<table id="table" hidden>
+  <thead><tr><th>모델</th><th>tok/s 평균</th><th>± 표준편차</th><th>VRAM (MiB)</th><th>첫 로드 (ms)</th><th>첫 실행 tok/s</th><th>기준 VRAM (MiB)</th><th>측정 수</th><th>PROCESSOR</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<div class="charts">
+  <div id="chart-tok" class="chart"></div>
+  <div id="chart-vram" class="chart"></div>
+</div>
+<div class="note" id="src"></div>
+<script src="plotly-basic.min.js"></script>
+<script>
+let FREE = 9303;
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d = 1, fixed = false) => (v === null || v === undefined) ? "—" : Number(v).toLocaleString("en-US", { minimumFractionDigits: fixed ? d : 0, maximumFractionDigits: d });
+
+function theme() {
+  const s = getComputedStyle(document.documentElement);
+  return { fg: s.getPropertyValue("--fg").trim(), line: s.getPropertyValue("--line").trim(), accent: s.getPropertyValue("--accent").trim(), bad: s.getPropertyValue("--bad").trim() };
+}
+
+function render(summary) {
+  $("empty").hidden = summary.length > 0;
+  $("table").hidden = summary.length === 0;
+  const tbody = $("rows");
+  tbody.innerHTML = "";
+  for (const s of summary) {
+    const tr = document.createElement("tr");
+    const over = s.fits_free === false;
+    tr.innerHTML = `<td>${s.model}</td><td>${fmt(s.tok_s_mean, 2, true)}</td><td>${fmt(s.tok_s_std, 2, true)}</td>` +
+      `<td class="${over ? "over" : ""}">${fmt(s.vram_mib, 0)}</td><td>${fmt(s.first_load_ms, 0)}</td><td>${fmt(s.first_tok_s, 2, true)}</td>` +
+      `<td>${fmt(s.baseline_vram_mib, 0)}</td><td>${s.runs}${s.errors ? " (오류 " + s.errors + ")" : ""}</td><td>${s.processor || "—"}</td>`;
+    tbody.appendChild(tr);
+  }
+  if (summary.length === 0) { Plotly.purge("chart-tok"); Plotly.purge("chart-vram"); return; }
+  const c = theme();
+  const models = summary.map((s) => s.model);
+  const base = { paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: { color: c.fg }, margin: { t: 40, r: 20, b: 80, l: 60 }, xaxis: { gridcolor: c.line } };
+  Plotly.newPlot("chart-tok", [{
+    type: "bar", x: models, y: summary.map((s) => s.tok_s_mean), marker: { color: c.accent },
+    error_y: { type: "data", array: summary.map((s) => s.tok_s_std || 0), visible: true, color: c.fg },
+  }], { ...base, title: "모델별 tok/s (평균 ± 표준편차)", yaxis: { title: "tok/s", gridcolor: c.line } }, { displayModeBar: false, responsive: true });
+  const top = Math.max(FREE, ...summary.map((s) => s.vram_mib || 0)) * 1.1;
+  Plotly.newPlot("chart-vram", [{
+    type: "bar", x: models, y: summary.map((s) => s.vram_mib),
+    marker: { color: summary.map((s) => (s.fits_free === false ? c.bad : c.accent)) },
+  }], {
+    ...base, title: "모델별 VRAM (MiB)", yaxis: { title: "MiB", gridcolor: c.line, range: [0, top] },
+    shapes: [{ type: "line", xref: "paper", x0: 0, x1: 1, y0: FREE, y1: FREE, line: { color: c.bad, dash: "dash", width: 2 } }],
+    annotations: [{ xref: "paper", x: 1, y: FREE, xanchor: "right", yanchor: "bottom", text: FREE.toLocaleString("en-US") + " MiB 여유", showarrow: false, font: { color: c.bad } }],
+  }, { displayModeBar: false, responsive: true });
+}
+
+window.onBenchEvent = (e) => {
+  if (e.type === "start") { $("status").textContent = "측정 시작…"; }
+  else if (e.type === "row") { $("status").textContent = `측정 중… ${e.model} (${e.n}번째 호출)${e.error ? " — 오류: " + e.error : ""}`; }
+  else if (e.type === "done") { $("status").textContent = "완료"; $("src").textContent = "저장: " + e.saved; render(e.summary); $("run").disabled = false; }
+  else if (e.type === "error") { $("status").textContent = "오류: " + e.message; $("run").disabled = false; }
+};
+
+async function init() {
+  const api = window.pywebview.api;
+  FREE = (await api.info()).free_vram_mib;
+  const r = await api.load_latest();
+  $("src").textContent = r.path ? "불러온 결과: " + r.path : "";
+  render(r.summary);
+  $("run").disabled = false;
+  $("status").textContent = "준비됨";
+  $("run").onclick = async () => {
+    const res = await api.run();
+    if (!res.ok) { $("status").textContent = res.reason; return; }
+    $("run").disabled = true;
+  };
+}
+window.addEventListener("pywebviewready", init);
+</script>
+</body>
+</html>
