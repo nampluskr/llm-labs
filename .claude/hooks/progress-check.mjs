@@ -13,6 +13,8 @@
 // 빼기로 했다면 왜 뺐는지 저장소 docs/DECISIONS.md 에 남긴다.
 
 import { execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 const LAB = /^(\d{2}-[^/]+\/\d{2}-[^/]+)\/(.*)$/;
 
@@ -38,7 +40,12 @@ for (const f of changed) {
   labs.set(lab, s);
 }
 
-const missing = [...labs].filter(([, s]) => s.work && !s.progress).map(([lab]) => lab);
+// INIT 전(docs/current/ 없음)의 연습 폴더는 기획 문서만 있는 단계라 판정하지 않는다.
+// PROGRESS.md 는 INIT 이 docs/current/ 와 함께 만든다.
+const root = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+const missing = [...labs]
+  .filter(([lab, s]) => s.work && !s.progress && existsSync(join(root, lab, 'docs', 'current')))
+  .map(([lab]) => lab);
 
 if (missing.length > 0) {
   process.stderr.write(
