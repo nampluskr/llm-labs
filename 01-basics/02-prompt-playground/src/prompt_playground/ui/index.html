@@ -7,10 +7,10 @@
 <style>
 :root {
   --bg: #f6f7f9; --panel: #fff; --text: #1d2229; --muted: #66707d; --line: #d8dde3;
-  --accent: #2f6fed; --accent-text: #fff; --danger: #c0392b; --run: #b7791f;
+  --accent: #2f6fed; --accent-text: #fff; --danger: #c0392b; --run: #b7791f; --ok: #1e7e46;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #14171b; --panel: #1d2127; --text: #e6e9ed; --muted: #9aa4b0; --line: #343b44; --accent: #5b8def; --danger: #ef6b5b; --run: #e0a93c; }
+  :root { --bg: #14171b; --panel: #1d2127; --text: #e6e9ed; --muted: #9aa4b0; --line: #343b44; --accent: #5b8def; --danger: #ef6b5b; --run: #e0a93c; --ok: #4cc27f; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, "Malgun Gothic", sans-serif; }
@@ -37,6 +37,9 @@ button:disabled { opacity: .5; cursor: default; }
 .col .params { padding: 6px 10px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); word-break: break-word; }
 .col .stats { padding: 6px 10px; font-size: 12px; border-bottom: 1px solid var(--line); }
 .col .body { padding: 10px; white-space: pre-wrap; word-break: break-word; }
+.col .repro { padding: 6px 10px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.col .repro .same { color: var(--ok); }
+.col .repro .diff { color: var(--danger); }
 .col.running .stats { color: var(--run); }
 .col.failed .body { color: var(--danger); }
 details { padding: 0 10px 8px; color: var(--muted); }
@@ -54,6 +57,7 @@ details pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; fo
     <label for="prompt">프롬프트 (모든 변형이 같은 프롬프트를 쓴다)</label>
     <textarea id="prompt">사과를 한 문장으로 설명해 줘.</textarea>
     <div class="rows" id="rows"></div>
+    <label style="margin-top:8px">temperature·top_p·seed·시스템 프롬프트가 모두 같은 행이 둘 이상이면, 결과 열에서 앞선 열과 출력이 글자 단위로 같은지 비교해 보여 준다.</label>
     <div class="bar">
       <button id="add">변형 추가</button>
       <button id="run" class="primary">실행</button>
@@ -116,6 +120,21 @@ function makeColumn(i, v) {
   c.append(h, p, s, b);
   return c;
 }
+// 같은 조건의 앞선 열과 글자 단위로 같은지(Phase 3). 답과 사고 과정을 따로 보여 준다
+function sameText(c) { return c.same ? "글자 단위로 같음" : `다름(${c.diff_at}번째 글자부터)`; }
+function reproLine(rp) {
+  const d = document.createElement("div");
+  d.className = "repro";
+  if (rp.unavailable) { d.textContent = `#${rp.ref + 1}과 같은 조건 · ${rp.unavailable}`; return d; }
+  const mk = (label, c) => {
+    const s = document.createElement("span");
+    s.className = c.same ? "same" : "diff";
+    s.textContent = `${label} ${sameText(c)}`;
+    return s;
+  };
+  d.append(`#${rp.ref + 1}과 같은 조건 · `, mk("답", rp.response), " · ", mk("사고 과정", rp.thinking));
+  return d;
+}
 async function run() {
   const variants = readVariants();
   // 결과 이벤트가 열보다 먼저 도착하지 않도록 열을 먼저 만들고 실행을 요청한다. 거절되면 이전 열로 되돌린다
@@ -153,6 +172,7 @@ window.onRunEvent = (e) => {
         d.append(sum, pre); c.appendChild(d);
       }
     }
+    if (r.repro) c.querySelector(".stats").after(reproLine(r.repro));
     const next = $("col" + (e.index + 1));
     if (next) { next.classList.add("running"); next.querySelector(".stats").textContent = "실행 중…"; }
     setStatus(`${e.index + 1}/${total} 완료`);

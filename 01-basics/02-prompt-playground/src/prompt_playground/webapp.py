@@ -7,6 +7,7 @@ from pathlib import Path
 
 import webview
 
+from .repro import compare_with_earlier
 from .runner import DEFAULT_HOST, MAX_VARIANTS, MODEL, Variant, run_variants, save_results
 
 INDEX = Path(__file__).parent / "ui" / "index.html"
@@ -70,11 +71,16 @@ class Api:
         return {"ok": True, "total": len(parsed)}
 
     def _work(self, prompt: str, variants: list[Variant]) -> None:
+        done: list[dict] = []
+
+        def on_result(i: int, r: dict) -> None:
+            done.append(r)
+            r["repro"] = compare_with_earlier(done, i)  # 저장 JSON에도 남는다
+            self._emit({"type": "result", "index": i, "result": r})
+
         try:
             self._emit({"type": "start", "total": len(variants)})
-            results = run_variants(
-                prompt, variants, client=self._client, host=DEFAULT_HOST, on_result=lambda i, r: self._emit({"type": "result", "index": i, "result": r})
-            )
+            results = run_variants(prompt, variants, client=self._client, host=DEFAULT_HOST, on_result=on_result)
             path = self._out_dir / f"playground-{time.strftime('%Y%m%d-%H%M%S')}.json"
             save_results(path, prompt, results)
             self._emit({"type": "done", "saved": str(path)})

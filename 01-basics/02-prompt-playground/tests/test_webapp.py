@@ -87,3 +87,21 @@ def test_worker_crash_is_reported_not_swallowed(tmp_path):
     assert api._window.events[-1]["type"] == "error" and "RuntimeError" in api._window.events[-1]["message"]
     time.sleep(0.05)
     assert api.run("q", [raw()])["ok"] is True  # 오류 뒤에도 busy가 풀린다
+
+
+def test_result_events_and_saved_json_carry_the_repro_comparison(tmp_path):
+    class Fixed(FakeClient):
+        def generate(self, **kw):
+            super().generate(**kw)
+            from types import SimpleNamespace
+            return SimpleNamespace(response="같은 답", thinking="같은 생각", eval_count=5)
+
+    api = make_api(tmp_path, Fixed())
+    api.run("q", [raw(s=1), raw(s=1), raw(s=2)])
+    assert api._window.done.wait(5)
+    results = [e["result"] for e in api._window.events if e["type"] == "result"]
+    assert results[0]["repro"] is None
+    assert results[1]["repro"] == {"ref": 0, "response": {"same": True, "diff_at": None}, "thinking": {"same": True, "diff_at": None}}
+    assert results[2]["repro"] is None  # seed가 다르면 같은 조건이 아니다
+    saved = json.loads(open(api._window.events[-1]["saved"], encoding="utf-8").read())
+    assert saved["results"][1]["repro"]["ref"] == 0
