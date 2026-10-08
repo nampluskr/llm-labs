@@ -52,7 +52,7 @@
 | Python CLI | 화면이 필요 없는 도구 | uv, `ollama`, argparse, `--json` 출력 |
 
 모델은 `01-hardware.md` 5.2절에서 "여유"로 판정한 `qwen3:4b`·`qwen3:8b`·`exaone3.5:7.8b`·`bge-m3`와
-비전용 `gemma3:4b`를 쓴다. VRAM·속도 수치는 Ollama 설치 전이라 모두 예상값이며, 설치 후 02-01 결과로 보정한다.
+비전용 `gemma3:4b`를 쓴다. VRAM·속도 수치는 Ollama 설치 전의 예상값이었고, 02-01 v0.1이 잰 모델 6개의 값은 `01-hardware.md` 5.4절에 실측으로 보정했다(2026-10-08). 재지 않은 모델의 수치는 아직 예상값이다.
 
 ---
 
